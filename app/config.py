@@ -1,7 +1,11 @@
 import os
 from pathlib import Path
 from typing import Optional
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field
+
+# Load local environment variables from .env if present
+load_dotenv()
 
 APP_DIR = Path(os.path.expanduser("~/.password_security_center"))
 APP_DIR.mkdir(parents=True, exist_ok=True)

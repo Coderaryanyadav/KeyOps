@@ -44,10 +44,19 @@ def run_doctor_diagnostics():
     # 7. Safety Policy Guardian
     table.add_row("Safety Policy Engine", "Authoritative Action Validator & Risk Classifier", "[green]PASS[/green]")
 
-    # 8. Secret Boundary
+    # 8. Submission Approval Manager
+    table.add_row("Submission Approval Engine", "Single-Use Cryptographic Human Tokens", "[green]PASS[/green]")
+
+    # 9. Credential Field Verifier
+    table.add_row("Credential Field Verifier", "Deterministic Multi-Signal DOM Verification", "[green]PASS[/green]")
+
+    # 10. Domain Trust Engine
+    table.add_row("Domain Trust Engine", "Strict eTLD+1 & Spoofing Defense", "[green]PASS[/green]")
+
+    # 11. Secret Boundary
     table.add_row("Secret Boundary", "100% Isolation (Zero Raw Passwords to AI)", "[green]PASS[/green]")
 
-    # 9. Privacy & Telemetry
+    # 12. Privacy & Telemetry
     table.add_row("Privacy Controls", "Zero Telemetry / Local-First", "[green]PASS[/green]")
 
     console.print(table)

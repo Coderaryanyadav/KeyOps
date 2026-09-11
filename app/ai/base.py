@@ -1,9 +1,15 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from pydantic import BaseModel, Field
 
 class ActionProposal(BaseModel):
-    action: str  # click, fill_secret, scroll, navigate, wait, request_human_intervention, submit
+    """
+    Structured action proposed by AI reasoning layer.
+    CRITICAL SECURITY INVARIANTS:
+    - Never contains raw credentials or secret values.
+    - AI CANNOT propose autonomous 'submit'. It proposes 'request_submission_approval'.
+    """
+    action: str  # click, fill_secret, scroll, navigate, wait, request_human_intervention, locate_password_interface, locate_password_field, prepare_password_change, request_submission_approval
     target_id: Optional[str] = None
     target_url: Optional[str] = None
     secret_reference: Optional[str] = None  # current_password, new_password, confirm_password
@@ -16,6 +22,7 @@ class PageUnderstanding(BaseModel):
     is_authenticated: bool = True
     has_password_form: bool = False
     challenge_detected: Optional[str] = None
+    semantic_sections: List[str] = Field(default_factory=list)
     summary: str = ""
 
 class AIProvider(ABC):

@@ -20,12 +20,12 @@ class LocalAIProvider(AIProvider):
                 has_password_form=True,
                 summary="Local Engine: Password change form detected."
             )
-        elif "security" in title or "settings" in title:
+        elif any(w in title for w in ["security", "settings", "profile", "account", "privacy", "authentication"]):
             return PageUnderstanding(
                 page_type="security_settings",
                 is_authenticated=True,
                 has_password_form=False,
-                summary="Local Engine: Settings page detected."
+                summary="Local Engine: Settings / Security page detected."
             )
 
         return PageUnderstanding(
@@ -44,21 +44,25 @@ class LocalAIProvider(AIProvider):
             submit_btn = next((el for el in elements if el.get("role") == "button" and any(w in el.get("text", "").lower() for w in ["save", "update", "change", "submit"])), None)
             if submit_btn:
                 return ActionProposal(
-                    action="submit",
+                    action="request_submission_approval",
                     target_id=submit_btn["element_id"],
-                    reason="Password inputs ready. Proposing submit with human confirmation.",
-                    confidence=0.95
+                    reason="Password inputs filled. Requesting explicit human approval before submission.",
+                    confidence=0.96
                 )
 
         # Priority 2: Navigation towards Security / Password
-        for kw in ["Password", "Security", "Account Settings", "Settings", "Profile"]:
-            match = next((el for el in elements if kw.lower() in el.get("text", "").lower()), None)
+        semantic_keywords = [
+            "Password", "Security", "Login & Security", "Security & Privacy",
+            "Account Settings", "Settings", "Profile", "Authentication", "Credentials"
+        ]
+        for kw in semantic_keywords:
+            match = next((el for el in elements if kw.lower() in el.get("text", "").lower() or kw.lower() in el.get("aria_label", "").lower()), None)
             if match:
                 return ActionProposal(
                     action="click",
                     target_id=match["element_id"],
                     reason=f"Navigating via link '{match['text']}'.",
-                    confidence=0.92
+                    confidence=0.94
                 )
 
         return ActionProposal(

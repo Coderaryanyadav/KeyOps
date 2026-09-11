@@ -16,7 +16,19 @@ class ActionSafetyValidator:
     The AI cannot override this authority.
     """
 
-    ALLOWED_ACTIONS = {"click", "fill_secret", "scroll", "navigate", "wait", "request_human_intervention", "submit"}
+    ALLOWED_ACTIONS = {
+        "click",
+        "fill_secret",
+        "scroll",
+        "navigate",
+        "wait",
+        "request_human_intervention",
+        "locate_password_interface",
+        "locate_password_field",
+        "prepare_password_change",
+        "request_submission_approval",
+        "submit"
+    }
 
     def __init__(self, policy: Optional[SafetyPolicyConfig] = None):
         self.policy = policy or default_safety_policy
@@ -27,7 +39,8 @@ class ActionSafetyValidator:
         self,
         action_payload: Dict[str, Any],
         service_name: str,
-        current_domain: str
+        current_domain: str,
+        has_user_approval: bool = False
     ) -> Tuple[bool, str]:
         """
         Validates the proposed action against all safety rules.
@@ -60,6 +73,8 @@ class ActionSafetyValidator:
                 return False, f"DENIED: Invalid secret reference '{secret_ref}'. Raw passwords are never allowed."
 
         if action == "submit":
+            if not has_user_approval and not action_payload.get("approval_token"):
+                return False, "DENIED: Explicit human approval is required before form submission. AI cannot submit autonomously."
             if confidence < self.policy.min_submission_confidence:
                 return False, f"DENIED: Submission confidence ({confidence:.2f}) is below threshold ({self.policy.min_submission_confidence:.2f})."
 
@@ -73,3 +88,4 @@ class ActionSafetyValidator:
 
         audit_logger.log_event(service_name, f"Safety Guardian APPROVED action '{action}' on '{target}' (confidence={confidence:.2f}).")
         return True, "Action approved by Safety Policy Engine."
+

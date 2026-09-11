@@ -32,16 +32,21 @@ def test_action_validator_blocks_dangerous_proposals():
     assert approved is False
     assert "BLOCKED" in reason
 
-def test_action_validator_enforces_confidence_thresholds():
+def test_action_validator_blocks_autonomous_submit():
     validator = ActionSafetyValidator()
 
-    # Low confidence -> DENIED
-    low_conf_proposal = {
-        "action": "navigate",
-        "target_url": "https://github.com/settings",
-        "confidence": 0.50,
-        "reason": "Guessing navigation"
+    # Autonomous submit proposed by AI without human approval -> DENIED
+    proposal = {
+        "action": "submit",
+        "target": "submit_btn",
+        "confidence": 1.0,
+        "reason": "Submitting password form"
     }
-    approved, reason = validator.validate_action(low_conf_proposal, "GitHub", "github.com")
+    approved, reason = validator.validate_action(proposal, "GitHub", "github.com", has_user_approval=False)
     assert approved is False
-    assert "DENIED" in reason
+    assert "Explicit human approval is required" in reason
+
+    # With explicit user approval -> APPROVED
+    approved_ok, reason_ok = validator.validate_action(proposal, "GitHub", "github.com", has_user_approval=True)
+    assert approved_ok is True
+

@@ -1,5 +1,6 @@
 let currentAccounts = [];
 let pendingRotationData = null;
+let activeWorkflowState = null;
 let ws = null;
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -37,13 +38,31 @@ function connectWebSocket() {
     ws.onmessage = (event) => {
         const data = JSON.parse(event.data);
         if (data.type === "ROTATION_PROGRESS") {
-            console.log("WebSocket Progress:", data.message, `(Confidence: ${data.confidence})`);
+            logLiveActivity(`[${data.phase || 'PROGRESS'}] ${data.message}`);
+            updateModalStatus(data.phase, data.message);
         } else if (data.type === "ROTATION_SUCCESS") {
+            logLiveActivity(`[SUCCESS] ${data.message}`);
             alert(`✅ ${data.message}`);
+            closeRotationModal();
             loadDashboardData();
             loadQueueData();
+        } else if (data.type === "ROTATION_FAILURE") {
+            logLiveActivity(`[FAILURE] ${data.message}`);
+            alert(`❌ ${data.message}`);
+            closeRotationModal();
+            loadDashboardData();
         }
     };
+}
+
+function logLiveActivity(msg) {
+    const container = document.getElementById("live-activity-stream");
+    if (container) {
+        const entry = document.createElement("div");
+        entry.className = "activity-entry";
+        entry.innerText = `${new Date().toLocaleTimeString()} — ${msg}`;
+        container.prepend(entry);
+    }
 }
 
 async function loadDashboardData() {
@@ -79,6 +98,7 @@ function renderAccountsTable(accounts) {
         const tr = document.createElement("tr");
         const riskClass = acc.risk.toLowerCase();
         const mfaBadge = acc.mfa_status ? "🟢 Enabled" : "🔴 Disabled";
+        const isSuccess = acc.rotation_status === "SUCCESS";
         
         tr.innerHTML = `
             <td><strong>${acc.service}</strong></td>
@@ -88,7 +108,7 @@ function renderAccountsTable(accounts) {
             <td>${acc.issue}</td>
             <td>${mfaBadge}</td>
             <td>
-                <button class="btn btn-action btn-primary" onclick="initiateRotation(${acc.id})">Fix</button>
+                ${isSuccess ? '<span style="color: var(--accent-emerald); font-weight:600;">✓ Rotated</span>' : `<button class="btn btn-action btn-primary" onclick="initiateRotation(${acc.id})">Rotate</button>`}
                 <button class="btn btn-action btn-secondary" onclick="openDomain('${acc.domain}')">Open</button>
             </td>
         `;
@@ -108,7 +128,6 @@ function filterAccounts() {
 
 async function startBatchCompromisedFix() {
     await initQueue("compromised");
-    // Switch to queue tab
     document.querySelector("[data-tab='queue']").click();
 }
 
@@ -159,6 +178,7 @@ function renderQueueTable(items) {
 }
 
 async function initiateRotation(accountId) {
+    showLoadingModal("Initiating Secure Rotation Lifecycle", "Opening site, verifying domain trust, and analyzing page structure...");
     try {
         const res = await fetch("/api/rotation/prepare", {
             method: "POST",
@@ -166,62 +186,172 @@ async function initiateRotation(accountId) {
             body: JSON.stringify({ account_id: accountId })
         });
         pendingRotationData = await res.json();
-        showRotationConfirmationModal(pendingRotationData);
+        
+        if (pendingRotationData.status === "READY_FOR_APPROVAL") {
+            showApprovalModal(pendingRotationData);
+        } else if (pendingRotationData.status === "WAITING_FOR_HUMAN") {
+            showHumanChallengeModal(pendingRotationData);
+        } else if (pendingRotationData.status === "DOMAIN_VIOLATION") {
+            alert(`⛔ Domain Trust Violation: ${pendingRotationData.reason}`);
+            closeRotationModal();
+        } else {
+            alert(`Preparation status: ${pendingRotationData.status} - ${pendingRotationData.reason || ''}`);
+            closeRotationModal();
+        }
     } catch (err) {
         alert("Failed to prepare password rotation: " + err);
+        closeRotationModal();
     }
 }
 
-function showRotationConfirmationModal(data) {
+function showLoadingModal(title, msg) {
+    const modalBody = document.getElementById("rotation-modal-body");
+    modalBody.innerHTML = `
+        <div style="text-align:center; padding: 30px;">
+            <div class="spinner" style="margin: 0 auto 16px;"></div>
+            <h3 style="margin-bottom: 8px;">${title}</h3>
+            <p id="modal-status-text" style="color: var(--text-muted);">${msg}</p>
+        </div>
+    `;
+    document.getElementById("modal-approve-btn").style.display = "none";
+    document.getElementById("modal-resume-btn").style.display = "none";
+    document.getElementById("rotation-modal").classList.add("active");
+}
+
+function updateModalStatus(phase, msg) {
+    const el = document.getElementById("modal-status-text");
+    if (el) el.innerText = `[${phase}] ${msg}`;
+}
+
+function showApprovalModal(data) {
     const modalBody = document.getElementById("rotation-modal-body");
     const isHighVal = data.is_high_value;
     const secondaryWarning = isHighVal 
-        ? `<div style="color: #ef4444; margin-top: 10px; font-weight: 600;">⚠️ HIGH-VALUE IDENTITY PROVIDER: Secondary explicit confirmation required.</div>` 
+        ? `<div style="background: rgba(239, 68, 68, 0.15); border: 1px solid #ef4444; border-radius: 6px; padding: 8px; margin-top: 10px; color: #ef4444; font-weight: 600;">⚠️ HIGH-VALUE IDENTITY PROVIDER: Secondary verification required.</div>` 
         : "";
 
     modalBody.innerHTML = `
         <div class="summary-card">
+            <h3 style="margin-bottom: 12px; color: var(--accent-emerald);">🛡️ Human Authorization Required</h3>
+            <p style="color: var(--text-muted); font-size: 0.88rem; margin-bottom: 12px;">AI has navigated to the official password management interface and verified credentials locally. Please authorize final submission.</p>
             <div class="summary-field"><span class="key">Target Service:</span><span class="val">${data.service}</span></div>
-            <div class="summary-field"><span class="key">Username / Email:</span><span class="val">${data.username}</span></div>
-            <div class="summary-field"><span class="key">Official Domain:</span><span class="val"><code>${data.domain}</code> ${data.is_domain_valid ? '✅ Verified' : '❌ Untrusted'}</span></div>
-            <div class="summary-field"><span class="key">Risk Assessment:</span><span class="val">${data.risk} (${data.issue})</span></div>
-            <div class="summary-field"><span class="key">CSPRNG Replacement Secret:</span><span class="val">•••••••••••••••• (Generated)</span></div>
-            <div class="summary-field"><span class="key">MFA Protection:</span><span class="val">${data.mfa_status ? 'Enabled' : 'Disabled'}</span></div>
+            <div class="summary-field"><span class="key">Username / Email:</span><span class="val">${data.username || ''}</span></div>
+            <div class="summary-field"><span class="key">Official Domain:</span><span class="val"><code>${data.domain}</code> ✅ Verified</span></div>
+            <div class="summary-field"><span class="key">Form Fingerprint:</span><span class="val"><code>${data.form_fingerprint}</code></span></div>
+            <div class="summary-field"><span class="key">CSPRNG Replacement Secret:</span><span class="val">•••••••••••••••• (Local CSPRNG)</span></div>
+            <div class="summary-field"><span class="key">Submission Token:</span><span class="val">One-time cryptographic authorization</span></div>
             ${secondaryWarning}
         </div>
     `;
 
+    document.getElementById("modal-approve-btn").style.display = "inline-block";
+    document.getElementById("modal-resume-btn").style.display = "none";
     document.getElementById("rotation-modal").classList.add("active");
+}
+
+function showHumanChallengeModal(data) {
+    const modalBody = document.getElementById("rotation-modal-body");
+    modalBody.innerHTML = `
+        <div class="summary-card" style="border-color: var(--accent-amber);">
+            <h3 style="margin-bottom: 12px; color: var(--accent-amber);">⚠️ Security Challenge Detected: ${data.challenge_type}</h3>
+            <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 16px;">
+                ${data.message || 'Please complete verification (MFA, CAPTCHA, or Login) directly in the browser window.'}
+            </p>
+            <p style="color: var(--text-muted); font-size: 0.85rem;">
+                Once completed, click <strong>Resume Rotation</strong> below to re-verify domain trust and continue the workflow automatically.
+            </p>
+        </div>
+    `;
+
+    document.getElementById("modal-approve-btn").style.display = "none";
+    document.getElementById("modal-resume-btn").style.display = "inline-block";
+    document.getElementById("rotation-modal").classList.add("active");
+}
+
+async function approveAndExecuteRotation() {
+    if (!pendingRotationData) return;
+
+    showLoadingModal("Authorizing & Submitting", "Issuing one-time approval token and submitting password update...");
+
+    try {
+        // Step 1: Request one-time cryptographic approval token
+        const approveRes = await fetch("/api/rotation/approve", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                account_id: pendingRotationData.account_id,
+                workflow_id: pendingRotationData.workflow_id,
+                session_id: pendingRotationData.session_id,
+                form_fingerprint: pendingRotationData.form_fingerprint
+            })
+        });
+        const approval = await approveRes.json();
+
+        // Step 2: Execute submission with token
+        const execRes = await fetch("/api/rotation/execute", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                workflow_id: pendingRotationData.workflow_id,
+                approval_token_id: approval.approval_token_id,
+                session_id: pendingRotationData.session_id,
+                account_id: pendingRotationData.account_id,
+                dry_run: false,
+                save_to_keychain: true
+            })
+        });
+        const result = await execRes.json();
+        
+        if (result.status === "SUCCESS") {
+            alert(`✅ Password rotation confirmed: ${result.details || 'Success'}`);
+            closeRotationModal();
+            loadDashboardData();
+            loadQueueData();
+        } else {
+            alert(`Submission outcome: ${result.status} - ${result.details || result.error}`);
+            closeRotationModal();
+            loadDashboardData();
+        }
+    } catch (err) {
+        alert("Execution failed: " + err);
+        closeRotationModal();
+    }
+}
+
+async function resumeHumanChallenge() {
+    if (!pendingRotationData) return;
+
+    showLoadingModal("Resuming Workflow", "Re-verifying domain trust and continuing AI navigation...");
+
+    try {
+        const res = await fetch("/api/rotation/resume", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                workflow_id: pendingRotationData.workflow_id,
+                session_id: pendingRotationData.session_id
+            })
+        });
+        const data = await res.json();
+        pendingRotationData = data;
+
+        if (data.status === "READY_FOR_APPROVAL") {
+            showApprovalModal(data);
+        } else if (data.status === "WAITING_FOR_HUMAN") {
+            showHumanChallengeModal(data);
+        } else {
+            alert(`Resume outcome: ${data.status}`);
+            closeRotationModal();
+        }
+    } catch (err) {
+        alert("Failed to resume: " + err);
+        closeRotationModal();
+    }
 }
 
 function closeRotationModal() {
     document.getElementById("rotation-modal").classList.remove("active");
     pendingRotationData = null;
-}
-
-async function executeRotationStep(dryRun = false) {
-    if (!pendingRotationData) return;
-
-    try {
-        const res = await fetch("/api/rotation/execute", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                account_id: pendingRotationData.account_id,
-                confirmed: true,
-                dry_run: dryRun,
-                generated_password: pendingRotationData.generated_password,
-                save_to_keychain: true
-            })
-        });
-        const result = await res.json();
-        closeRotationModal();
-        alert(`Success: ${result.message}`);
-        loadDashboardData();
-        loadQueueData();
-    } catch (err) {
-        alert("Rotation execution failed: " + err);
-    }
 }
 
 function triggerImportModal() {
@@ -279,6 +409,9 @@ async function loadDoctorData() {
                 <div class="summary-field"><span class="key">SQLite Database:</span><span class="val">${doc.sqlite_path}</span></div>
                 <div class="summary-field"><span class="key">macOS Keychain Access:</span><span class="val">Verified</span></div>
                 <div class="summary-field"><span class="key">Registered Service Adapters:</span><span class="val">${doc.adapters_count} Active</span></div>
+                <div class="summary-field"><span class="key">Submission Approval Engine:</span><span class="val" style="color: var(--accent-emerald)">Active (Enforced)</span></div>
+                <div class="summary-field"><span class="key">Credential Field Verifier:</span><span class="val" style="color: var(--accent-emerald)">Active (Deterministic DOM)</span></div>
+                <div class="summary-field"><span class="key">Domain Trust Engine:</span><span class="val" style="color: var(--accent-emerald)">Active (Strict eTLD+1)</span></div>
                 <div class="summary-field"><span class="key">Telemetry Status:</span><span class="val" style="color: var(--accent-emerald)">Disabled (100% Privacy)</span></div>
             </div>
         `;

@@ -17,6 +17,8 @@ from app.core.domain_validator import DomainValidator, DomainValidationError
 from app.core.audit_logger import audit_logger
 from app.core.queue_manager import queue_manager, QueueItemStatus
 from app.core.workflow_memory import workflow_memory
+from app.core.orchestrator import orchestrator
+from app.safety.submission_approval import approval_manager
 from app.adapters.registry import adapter_registry
 from app.integrations.csv_importer import CSVAccountImporter
 from app.integrations.keychain import KeychainManager
@@ -41,7 +43,7 @@ class ConnectionManager:
             self.active_connections.remove(websocket)
 
     async def broadcast(self, message: Dict[str, Any]):
-        for connection in self.active_connections:
+        for connection in list(self.active_connections):
             try:
                 await connection.send_json(message)
             except Exception:
@@ -127,57 +129,8 @@ def init_queue(filter_mode: str = "all", db: Session = Depends(get_db)):
     return {"queue": items, "count": len(items)}
 
 @app.post("/api/rotation/prepare")
-def prepare_rotation(data: Dict[str, Any], db: Session = Depends(get_db)):
+async def prepare_rotation(data: Dict[str, Any], db: Session = Depends(get_db)):
     account_id = data.get("account_id")
-    acc = db.query(Account).filter(Account.id == account_id).first()
-    if not acc:
-        raise HTTPException(status_code=404, detail="Account not found")
-
-    adapter = adapter_registry.get_adapter_for_service(acc.service, acc.domain)
-    policy = adapter.get_password_policy()
-    
-    # Generate CSPRNG password
-    generator = PasswordGenerator()
-    new_password = generator.generate(policy)
-
-    # Validate official domain
-    validator = DomainValidator()
-    is_domain_valid = False
-    domain_error = ""
-    try:
-        validator.validate_url(f"https://{acc.domain}", acc.service)
-        is_domain_valid = True
-    except DomainValidationError as e:
-        domain_error = str(e)
-
-    is_high_value = acc.service.lower() in HIGH_VALUE_SERVICES
-
-    return {
-        "account_id": acc.id,
-        "service": acc.service,
-        "username": acc.username,
-        "domain": acc.domain,
-        "risk": acc.risk,
-        "issue": acc.issue,
-        "mfa_status": acc.mfa_status,
-        "is_high_value": is_high_value,
-        "is_domain_valid": is_domain_valid,
-        "domain_error": domain_error,
-        "generated_password": new_password,
-        "password_policy": policy.model_dump(),
-        "requires_secondary_confirmation": is_high_value
-    }
-
-@app.post("/api/rotation/execute")
-async def execute_rotation(data: Dict[str, Any], db: Session = Depends(get_db)):
-    account_id = data.get("account_id")
-    confirmed = data.get("confirmed", False)
-    dry_run = data.get("dry_run", False)
-    new_password = data.get("generated_password", "")
-
-    if not confirmed and not dry_run:
-        raise HTTPException(status_code=400, detail="User confirmation required before final submission.")
-
     acc = db.query(Account).filter(Account.id == account_id).first()
     if not acc:
         raise HTTPException(status_code=404, detail="Account not found")
@@ -185,45 +138,136 @@ async def execute_rotation(data: Dict[str, Any], db: Session = Depends(get_db)):
     acc.rotation_status = "IN_PROGRESS"
     db.commit()
 
-    # Step-by-step WebSocket events
-    steps = [
-        ("VALIDATING_DOMAIN", f"Validating official domain https://{acc.domain}...", 0.99),
-        ("CHECKING_AUTH", "Checking authentication state...", 0.95),
-        ("DISCOVERING_SETTINGS", "Navigating to Account Security Settings...", 0.94),
-        ("DETECTING_FORM", "Locating password change form fields...", 0.98),
-        ("FILLING_FIELDS", "Generating & filling cryptographically secure password...", 0.99),
-    ]
-
-    for stage, msg, conf in steps:
+    async def broadcast_progress(payload: Dict[str, Any]):
         await ws_manager.broadcast({
             "type": "ROTATION_PROGRESS",
+            **payload
+        })
+
+    result = await orchestrator.prepare_rotation_workflow(
+        account_id=acc.id,
+        service=acc.service,
+        domain=acc.domain,
+        username=acc.username,
+        on_progress_callback=broadcast_progress
+    )
+
+    is_high_value = acc.service.lower() in HIGH_VALUE_SERVICES
+    result["is_high_value"] = is_high_value
+    result["username"] = acc.username
+
+    return result
+
+@app.post("/api/rotation/approve")
+def approve_rotation(data: Dict[str, Any], db: Session = Depends(get_db)):
+    """
+    Called when the human user explicitly reviews credentials and clicks 'Approve' in UI.
+    Issues a one-time cryptographic approval token.
+    """
+    account_id = data.get("account_id")
+    workflow_id = data.get("workflow_id")
+    session_id = data.get("session_id")
+    form_fingerprint = data.get("form_fingerprint")
+
+    acc = db.query(Account).filter(Account.id == account_id).first()
+    if not acc:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    token = approval_manager.issue_approval_token(
+        account_id=acc.id,
+        service=acc.service,
+        verified_domain=acc.domain,
+        browser_session_id=session_id,
+        workflow_id=workflow_id,
+        form_fingerprint=form_fingerprint,
+        ttl_seconds=180
+    )
+
+    return {
+        "status": "APPROVED",
+        "approval_token_id": token.token_id,
+        "expires_at": token.expires_at,
+        "account_id": acc.id,
+        "workflow_id": workflow_id
+    }
+
+@app.post("/api/rotation/execute")
+async def execute_rotation(data: Dict[str, Any], db: Session = Depends(get_db)):
+    workflow_id = data.get("workflow_id")
+    token_id = data.get("approval_token_id")
+    session_id = data.get("session_id")
+    account_id = data.get("account_id")
+    dry_run = data.get("dry_run", False)
+    save_to_keychain = data.get("save_to_keychain", True)
+
+    acc = db.query(Account).filter(Account.id == account_id).first()
+    if not acc:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    if not token_id and not dry_run:
+        raise HTTPException(status_code=400, detail="Submission rejected: Missing human approval token.")
+
+    async def broadcast_progress(payload: Dict[str, Any]):
+        await ws_manager.broadcast({
+            "type": "ROTATION_PROGRESS",
+            **payload
+        })
+
+    if dry_run:
+        acc.rotation_status = "DRY_RUN_PASSED"
+        db.commit()
+        return {"status": "SUCCESS", "message": f"Dry-run rotation validated for {acc.service}."}
+
+    exec_result = await orchestrator.execute_approved_submission(
+        workflow_id=workflow_id,
+        approval_token_id=token_id,
+        session_id=session_id,
+        save_to_keychain=save_to_keychain,
+        on_progress_callback=broadcast_progress
+    )
+
+    if exec_result.get("status") == "SUCCESS":
+        acc.rotation_status = "SUCCESS"
+        acc.issue = "Secure"
+        acc.risk = "LOW"
+        db.commit()
+
+        await ws_manager.broadcast({
+            "type": "ROTATION_SUCCESS",
             "account_id": acc.id,
             "service": acc.service,
-            "stage": stage,
-            "message": msg,
-            "confidence": conf
+            "message": f"Password rotation successfully confirmed for {acc.service}!"
         })
-        await asyncio.sleep(0.3)
+    else:
+        acc.rotation_status = "FAILED"
+        db.commit()
 
-    # Save to macOS Keychain upon request
-    if data.get("save_to_keychain", True) and new_password:
-        KeychainManager.store_credential(acc.service, acc.username, new_password)
+        await ws_manager.broadcast({
+            "type": "ROTATION_FAILURE",
+            "account_id": acc.id,
+            "service": acc.service,
+            "message": f"Password rotation failed: {exec_result.get('details') or exec_result.get('error')}"
+        })
 
-    acc.rotation_status = "SUCCESS" if not dry_run else "DRY_RUN_PASSED"
-    acc.issue = "Secure"
-    acc.risk = "LOW"
-    db.commit()
+    return exec_result
 
-    audit_logger.log_event(acc.service, f"Password rotation completed successfully for '{acc.username}'.")
+@app.post("/api/rotation/resume")
+async def resume_rotation(data: Dict[str, Any], db: Session = Depends(get_db)):
+    workflow_id = data.get("workflow_id")
+    session_id = data.get("session_id")
 
-    await ws_manager.broadcast({
-        "type": "ROTATION_SUCCESS",
-        "account_id": acc.id,
-        "service": acc.service,
-        "message": f"Password rotation successfully completed for {acc.service}!"
-    })
+    async def broadcast_progress(payload: Dict[str, Any]):
+        await ws_manager.broadcast({
+            "type": "ROTATION_PROGRESS",
+            **payload
+        })
 
-    return {"status": "SUCCESS", "message": f"Password rotated successfully for {acc.service}."}
+    res = await orchestrator.resume_workflow_after_human(
+        workflow_id=workflow_id,
+        session_id=session_id,
+        on_progress_callback=broadcast_progress
+    )
+    return res
 
 @app.get("/api/doctor")
 def run_doctor_diagnostics():
@@ -241,7 +285,6 @@ def run_doctor_diagnostics():
 
 @app.get("/api/workflows")
 def get_workflows():
-    # Exposes non-sensitive workflow memory
     return {k: v.model_dump() for k, v in workflow_memory._workflows.items()}
 
 @app.get("/api/audit")

@@ -133,7 +133,8 @@ async def test_full_10_account_ai_assisted_acceptance():
             domain="127.0.0.1:9631",
             secret_boundary=boundary
         )
-        assert reached is True
+        assert reached["status"] == "READY_FOR_APPROVAL"
+        assert "form_fingerprint" in reached
         queue_mgr.update_item_status(5, QueueItemStatus.SUCCESS, "Unknown Website AI Discovered", 0.95)
 
         # -------------------------------------------------------------

@@ -1,13 +1,16 @@
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional
 from playwright.async_api import Page, ElementHandle
-from app.core.password_generator import PasswordPolicy, PasswordGenerator
+from app.core.password_generator import PasswordPolicy
+from app.safety.secret_boundary import SecretBoundaryViolation
 
 class PasswordAdapter(ABC):
     """
     Abstract base class for all Service Adapters.
-    Defines official domains, URLs, navigation logic, field detection,
-    MFA detection, CAPTCHA detection, and submission verification.
+    Defines official domains, URLs, navigation logic, and password policies.
+    CRITICAL ARCHITECTURAL INVARIANT: Adapters are declarative metadata and route providers.
+    Adapters CANNOT directly fill or submit plaintext credentials without the central
+    ControlledActionExecutor and SubmissionApprovalManager.
     """
 
     @property
@@ -46,7 +49,6 @@ class PasswordAdapter(ABC):
     async def detect_password_fields(self, page: Page) -> Dict[str, Optional[ElementHandle]]:
         pass
 
-    @abstractmethod
     async def fill_password(
         self,
         page: Page,
@@ -54,11 +56,24 @@ class PasswordAdapter(ABC):
         current_password: Optional[str],
         new_password: str
     ) -> bool:
-        pass
+        """
+        SECURITY BOUNDARY ENFORCEMENT:
+        Direct adapter secret filling is strictly blocked to prevent chokepoint bypass.
+        All credential filling must route through ControlledActionExecutor with CredentialFieldVerifier.
+        """
+        raise SecretBoundaryViolation(
+            "Direct adapter secret filling is prohibited. Credential operations must route through ControlledActionExecutor."
+        )
 
-    @abstractmethod
     async def submit_password_change(self, page: Page, dry_run: bool = False) -> bool:
-        pass
+        """
+        SECURITY BOUNDARY ENFORCEMENT:
+        Direct adapter submission is strictly blocked to prevent approval bypass.
+        All submissions must route through ControlledActionExecutor with a valid SubmissionApprovalToken.
+        """
+        raise SecretBoundaryViolation(
+            "Direct adapter submission is prohibited. Submissions must route through ControlledActionExecutor with human approval token."
+        )
 
     @abstractmethod
     async def detect_success(self, page: Page) -> bool:

@@ -112,53 +112,6 @@ class GenericAdapter(PasswordAdapter):
             "confirm_password": form.confirm_password
         }
 
-    async def fill_password(
-        self,
-        page: Page,
-        fields: Dict[str, Optional[ElementHandle]],
-        current_password: Optional[str],
-        new_password: str
-    ) -> bool:
-        if not fields.get("new_password"):
-            audit_logger.log_event(self.service_name, "Generic Engine HALT: New password field missing.", level="WARNING")
-            return False
-
-        if fields.get("current_password") and current_password:
-            await fields["current_password"].fill(current_password)
-        if fields.get("new_password"):
-            await fields["new_password"].fill(new_password)
-        if fields.get("confirm_password"):
-            await fields["confirm_password"].fill(new_password)
-
-        return True
-
-    async def submit_password_change(self, page: Page, dry_run: bool = False) -> bool:
-        if dry_run:
-            audit_logger.log_event(self.service_name, "[DRY-RUN] Verified submission button exists. Change skipped.")
-            return True
-
-        SUBMIT_SELECTORS = [
-            ("button[type='submit']:has-text('Save')", 0.95),
-            ("button[type='submit']:has-text('Update password')", 0.98),
-            ("button[type='submit']:has-text('Change password')", 0.98),
-            ("input[type='submit'][value*='Save']", 0.92),
-            ("input[type='submit'][value*='Update']", 0.94),
-            ("button:has-text('Save changes')", 0.90)
-        ]
-
-        for sel, conf in SUBMIT_SELECTORS:
-            btn = await page.query_selector(sel)
-            if btn and await btn.is_visible():
-                action = ActionPlanner.plan_submit(sel, conf, f"Found submit button '{sel}'")
-                is_safe, _ = self.safety_validator.validate_action(action, self.service_name, self._domain)
-                if is_safe:
-                    await btn.click()
-                    await page.wait_for_timeout(2500)
-                    return True
-
-        audit_logger.log_event(self.service_name, "Generic Engine HALT: Could not locate submit button safely.", level="WARNING")
-        return False
-
     async def detect_success(self, page: Page) -> bool:
         content = (await page.content()).lower()
         success_signals = ["password updated", "password changed", "settings saved", "changes saved", "success"]

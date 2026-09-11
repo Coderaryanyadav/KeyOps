@@ -32,30 +32,6 @@ class AppleAdapter(PasswordAdapter):
         detector = FieldDetector()
         return await detector.detect_password_fields(page)
 
-    async def fill_password(
-        self,
-        page: Page,
-        fields: Dict[str, Optional[ElementHandle]],
-        current_password: Optional[str],
-        new_password: str
-    ) -> bool:
-        if fields.get("current_password") and current_password:
-            await fields["current_password"].fill(current_password)
-        if fields.get("new_password"):
-            await fields["new_password"].fill(new_password)
-        if fields.get("confirm_password"):
-            await fields["confirm_password"].fill(new_password)
-        return True
-
-    async def submit_password_change(self, page: Page, dry_run: bool = False) -> bool:
-        if dry_run:
-            return True
-        btn = await page.query_selector("button:has-text('Change Password'), button:has-text('Save')")
-        if btn:
-            await btn.click()
-            return True
-        return False
-
     async def detect_success(self, page: Page) -> bool:
         content = await page.content()
         return "password updated" in content.lower()

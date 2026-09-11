@@ -31,30 +31,6 @@ class AmazonAdapter(PasswordAdapter):
     async def detect_password_fields(self, page: Page) -> Dict[str, Optional[ElementHandle]]:
         return await FieldDetector().detect_password_fields(page)
 
-    async def fill_password(
-        self,
-        page: Page,
-        fields: Dict[str, Optional[ElementHandle]],
-        current_password: Optional[str],
-        new_password: str
-    ) -> bool:
-        if fields.get("current_password") and current_password:
-            await fields["current_password"].fill(current_password)
-        if fields.get("new_password"):
-            await fields["new_password"].fill(new_password)
-        if fields.get("confirm_password"):
-            await fields["confirm_password"].fill(new_password)
-        return True
-
-    async def submit_password_change(self, page: Page, dry_run: bool = False) -> bool:
-        if dry_run:
-            return True
-        btn = await page.query_selector("input#cnep_1D_submit_button, input[type='submit']")
-        if btn:
-            await btn.click()
-            return True
-        return False
-
     async def detect_success(self, page: Page) -> bool:
         content = await page.content()
         return "success" in content.lower() or "saved" in content.lower()

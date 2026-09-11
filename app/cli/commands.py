@@ -116,9 +116,14 @@ def audit_cmd():
 def fix_cmd(
     service: Optional[str] = typer.Argument(None, help="Service name to fix"),
     critical: bool = typer.Option(False, "--critical", help="Fix all critical risk accounts"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Perform navigation dry-run without submitting password changes")
+    dry_run: bool = typer.Option(False, "--dry-run", help="Perform navigation dry-run without submitting password changes"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Auto-confirm prompt (still verifies approval token)")
 ):
-    """Initiate password rotation for specified account or risk category."""
+    """Initiate genuine AI-assisted password rotation for specified account or risk category."""
+    import asyncio
+    from app.core.orchestrator import orchestrator
+    from app.safety.submission_approval import approval_manager
+
     init_db()
     db = SessionLocal()
     
@@ -134,16 +139,82 @@ def fix_cmd(
         db.close()
         return
 
-    for a in accs:
-        console.print(f"[bold green]Initiating rotation for {a.service} ({a.username}) [dry-run={dry_run}][/bold green]")
-        audit_logger.log_event(a.service, f"CLI Rotation started for {a.username} (dry_run={dry_run})")
-        a.rotation_status = "SUCCESS" if not dry_run else "DRY_RUN_PASSED"
-        a.risk = "LOW"
-        a.issue = "Secure"
+    async def _process_cli_rotations():
+        for a in accs:
+            console.print(f"\n[bold cyan]═══ Processing Account #{a.id}: {a.service} ({a.username}) ═══[/bold cyan]")
+            
+            # Progress callback for terminal
+            async def print_progress(payload):
+                phase = payload.get("phase", "PROGRESS")
+                msg = payload.get("message", "")
+                console.print(f"  [dim]{phase}:[/dim] {msg}")
 
-    db.commit()
+            prep_res = await orchestrator.prepare_rotation_workflow(
+                account_id=a.id,
+                service=a.service,
+                domain=a.domain,
+                username=a.username,
+                on_progress_callback=print_progress
+            )
+
+            status = prep_res.get("status")
+            if status != "READY_FOR_APPROVAL":
+                console.print(f"[bold red]✗ Preparation stopped with status '{status}': {prep_res.get('reason') or prep_res.get('message')}[/bold red]")
+                a.rotation_status = "FAILED"
+                db.commit()
+                continue
+
+            if dry_run:
+                console.print("[bold yellow]✓ [DRY-RUN] Form located and CSPRNG secret prepared successfully. Submission skipped.[/bold yellow]")
+                a.rotation_status = "DRY_RUN_PASSED"
+                db.commit()
+                continue
+
+            # Human Approval Gate
+            approved = yes
+            if not approved:
+                approved = typer.confirm(f"\nAuthorize final password submission for {a.service} ({a.username}) on domain {a.domain}?", default=False)
+
+            if not approved:
+                console.print("[yellow]Submission cancelled by user.[/yellow]")
+                a.rotation_status = "CANCELLED"
+                db.commit()
+                continue
+
+            # Issue cryptographic approval token
+            token = approval_manager.issue_approval_token(
+                account_id=a.id,
+                service=a.service,
+                verified_domain=a.domain,
+                browser_session_id=prep_res["session_id"],
+                workflow_id=prep_res["workflow_id"],
+                form_fingerprint=prep_res["form_fingerprint"]
+            )
+
+            # Execute submission through secure ControlledActionExecutor
+            exec_res = await orchestrator.execute_approved_submission(
+                workflow_id=prep_res["workflow_id"],
+                approval_token_id=token.token_id,
+                session_id=prep_res["session_id"],
+                save_to_keychain=True,
+                on_progress_callback=print_progress
+            )
+
+            if exec_res.get("status") == "SUCCESS":
+                console.print(f"[bold green]✓ Password rotation successfully verified and stored for {a.service}![/bold green]")
+                a.rotation_status = "SUCCESS"
+                a.issue = "Secure"
+                a.risk = "LOW"
+                db.commit()
+            else:
+                console.print(f"[bold red]✗ Rotation failed: {exec_res.get('details') or exec_res.get('error')}[/bold red]")
+                a.rotation_status = "FAILED"
+                db.commit()
+
+    asyncio.run(_process_cli_rotations())
     db.close()
-    console.print("[bold green]✓ Rotation process completed.[/bold green]")
+    console.print("\n[bold green]✓ Batch CLI rotation process complete.[/bold green]\n")
 
 if __name__ == "__main__":
     app()
+

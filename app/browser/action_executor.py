@@ -18,6 +18,9 @@ class ControlledActionExecutor:
     Enforces that submission requires a valid, active user approval token.
     """
 
+    def __init__(self, custom_approval_manager: Optional[Any] = None):
+        self._approval_manager = custom_approval_manager or approval_manager
+
     async def execute_action(
         self,
         page: Page,
@@ -83,7 +86,7 @@ class ControlledActionExecutor:
             workflow_id = approval_context.get("workflow_id", "")
             form_fingerprint = approval_context.get("form_fingerprint", "")
 
-            is_valid, reason = approval_manager.validate_and_consume_token(
+            is_valid, reason = self._approval_manager.validate_and_consume_token(
                 token_id=token_id,
                 account_id=account_id,
                 service=service,

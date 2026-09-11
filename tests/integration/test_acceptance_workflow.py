@@ -161,15 +161,58 @@ async def test_full_acceptance_scenario():
         assert nav_success is True
         assert "/generic/security" in page.url
 
-        fields = await generic_adapter.detect_password_fields(page)
-        assert fields["new_password"] is not None
+        # Direct adapter credential mutation MUST be rejected by base class security invariant
+        from app.safety.secret_boundary import SecretBoundaryViolation, SecretBoundary
+        from app.safety.submission_approval import approval_manager
+        from app.browser.action_executor import ControlledActionExecutor
+        
+        form_det = await generic_adapter.detect_password_fields(page)
 
+        with pytest.raises(SecretBoundaryViolation):
+            await generic_adapter.fill_password(page, form_det, "old", "new_pwd")
+
+        with pytest.raises(SecretBoundaryViolation):
+            await generic_adapter.submit_password_change(page)
+
+        # Execute through authoritative ControlledActionExecutor
+        boundary = SecretBoundary()
         gen_pwd = generator.generate(PasswordPolicy(length=20))
-        fill_ok = await generic_adapter.fill_password(page, fields, "old", gen_pwd)
-        assert fill_ok is True
+        boundary.register_secrets(current_password="old", new_password=gen_pwd)
 
-        submit_ok = await generic_adapter.submit_password_change(page)
-        assert submit_ok is True
+        executor = ControlledActionExecutor()
+        new_el = form_det["new_password"]
+        await executor.execute_action(
+            page=page,
+            action_payload={"action": "fill_secret", "target_id": "new_pw_id", "secret_reference": "new_password"},
+            element_map={"new_pw_id": new_el},
+            secret_boundary=boundary
+        )
+
+        token = approval_manager.issue_approval_token(
+            account_id=acc4.account_id,
+            service="GenericSite",
+            verified_domain="127.0.0.1:9753",
+            browser_session_id="sess_generic",
+            workflow_id="wf_generic",
+            form_fingerprint="fp_generic"
+        )
+        
+        submit_btn = await page.query_selector("button[type='submit']")
+        await executor.execute_action(
+            page=page,
+            action_payload={"action": "submit", "target_id": "btn_sub", "confidence": 1.0},
+            element_map={"btn_sub": submit_btn},
+            secret_boundary=boundary,
+            approval_context={
+                "token_id": token.token_id,
+                "account_id": acc4.account_id,
+                "service": "GenericSite",
+                "current_domain": "127.0.0.1:9753",
+                "browser_session_id": "sess_generic",
+                "workflow_id": "wf_generic",
+                "form_fingerprint": "fp_generic"
+            }
+        )
         assert await generic_adapter.detect_success(page) is True
         queue_mgr.update_item_status(acc4.account_id, QueueItemStatus.SUCCESS, "Generic Discovery Fixed", 0.95)
 

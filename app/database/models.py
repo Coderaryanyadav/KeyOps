@@ -43,3 +43,20 @@ class SecuritySetting(Base):
 
     key: Mapped[str] = mapped_column(String(100), primary_key=True)
     value: Mapped[str] = mapped_column(Text, nullable=False)
+
+class PersistedWorkflowState(Base):
+    """
+    Persisted non-sensitive workflow lifecycle tracking.
+    CRITICAL SECURITY INVARIANT: NEVER stores passwords, keys, tokens, or raw credentials.
+    """
+    __tablename__ = "workflow_states"
+
+    workflow_id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    account_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    service: Mapped[str] = mapped_column(String(100), nullable=False)
+    domain: Mapped[str] = mapped_column(String(200), nullable=False)
+    phase: Mapped[str] = mapped_column(String(50), nullable=False)
+    last_safe_state: Mapped[str] = mapped_column(String(50), nullable=True)
+    challenge_type: Mapped[str] = mapped_column(String(50), nullable=True)
+    form_fingerprint: Mapped[str] = mapped_column(String(100), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))

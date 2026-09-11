@@ -50,32 +50,6 @@ class GitHubAdapter(PasswordAdapter):
             "confirm_password": confirm_pw
         }
 
-    async def fill_password(
-        self,
-        page: Page,
-        fields: Dict[str, Optional[ElementHandle]],
-        current_password: Optional[str],
-        new_password: str
-    ) -> bool:
-        if fields.get("current_password") and current_password:
-            await fields["current_password"].fill(current_password)
-        if fields.get("new_password"):
-            await fields["new_password"].fill(new_password)
-        if fields.get("confirm_password"):
-            await fields["confirm_password"].fill(new_password)
-        return True
-
-    async def submit_password_change(self, page: Page, dry_run: bool = False) -> bool:
-        if dry_run:
-            return True
-
-        btn = await page.query_selector("button[type='submit']:has-text('Update password'), input[type='submit'][value='Update password']")
-        if btn:
-            await btn.click()
-            await page.wait_for_timeout(2000)
-            return True
-        return False
-
     async def detect_success(self, page: Page) -> bool:
         content = await page.content()
         return "password updated" in content.lower() or "password changed" in content.lower()

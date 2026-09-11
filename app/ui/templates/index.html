@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Password Security Center — AI Assisted</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body class="dark-theme">
+    <div class="app-layout">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar">
+            <div class="brand">
+                <div class="shield-icon">🛡️</div>
+                <div class="brand-text">
+                    <h1>SECURITY CENTER</h1>
+                    <span class="subtitle">AI Edition v1.0</span>
+                </div>
+            </div>
+
+            <nav class="nav-menu">
+                <button class="nav-btn active" data-tab="dashboard">
+                    <span class="nav-icon">📊</span> Dashboard
+                </button>
+                <button class="nav-btn" data-tab="queue">
+                    <span class="nav-icon">🔄</span> Rotation Queue
+                </button>
+                <button class="nav-btn" data-tab="ai-activity">
+                    <span class="nav-icon">🤖</span> AI & Safety Activity
+                </button>
+                <button class="nav-btn" data-tab="accounts">
+                    <span class="nav-icon">🔑</span> Accounts
+                </button>
+                <button class="nav-btn" data-tab="workflows">
+                    <span class="nav-icon">🧠</span> Website Workflows
+                </button>
+                <button class="nav-btn" data-tab="integrations">
+                    <span class="nav-icon">🔐</span> Integrations
+                </button>
+                <button class="nav-btn" data-tab="adapters">
+                    <span class="nav-icon">🔌</span> Service Adapters
+                </button>
+                <button class="nav-btn" data-tab="doctor">
+                    <span class="nav-icon">🩺</span> System Doctor
+                </button>
+                <button class="nav-btn" data-tab="audit">
+                    <span class="nav-icon">📜</span> Audit Logs
+                </button>
+                <button class="nav-btn" data-tab="privacy">
+                    <span class="nav-icon">🔒</span> Security & Privacy
+                </button>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="privacy-badge">
+                    <span class="dot green"></span> Secret Isolation • Zero Telemetry
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Workspace -->
+        <main class="main-content">
+            <!-- TAB: Dashboard -->
+            <section id="tab-dashboard" class="tab-page active">
+                <!-- HERO ACTION BANNER -->
+                <div class="hero-banner">
+                    <div class="hero-text">
+                        <h2>⚠️ Compromised Passwords Detected</h2>
+                        <p>Turn compromised Apple Passwords / CSV exports into safe, AI-assisted, human-in-the-loop password rotations.</p>
+                    </div>
+                    <button class="btn btn-hero" onclick="startBatchCompromisedFix()">⚡ FIX COMPROMISED ACCOUNTS</button>
+                </div>
+
+                <!-- Security Score & Metrics Cards -->
+                <div class="metrics-grid">
+                    <div class="card score-card">
+                        <div class="score-header">Security Score</div>
+                        <div class="score-value" id="score-display">--</div>
+                        <div class="score-bar-container">
+                            <div class="score-bar" id="score-bar" style="width: 0%;"></div>
+                        </div>
+                    </div>
+
+                    <div class="card risk-breakdown-card">
+                        <div class="card-title">Risk Distribution</div>
+                        <div class="risk-counters">
+                            <div class="risk-badge critical"><span class="label">CRITICAL</span> <span id="count-critical" class="val">0</span></div>
+                            <div class="risk-badge high"><span class="label">HIGH</span> <span id="count-high" class="val">0</span></div>
+                            <div class="risk-badge medium"><span class="label">MEDIUM</span> <span id="count-medium" class="val">0</span></div>
+                            <div class="risk-badge low"><span class="label">LOW</span> <span id="count-low" class="val">0</span></div>
+                        </div>
+                    </div>
+
+                    <div class="card stats-card">
+                        <div class="stat-item">
+                            <span class="stat-label">Fixed Accounts</span>
+                            <span class="stat-val" id="stat-fixed">0</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">MFA Coverage</span>
+                            <span class="stat-val" id="stat-mfa">0%</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">AI Reasoning Engine</span>
+                            <span class="stat-val" style="color: var(--accent-blue);">Gemini + Safety Guardian</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Accounts Requiring Attention Table -->
+                <div class="card table-card">
+                    <div class="table-header">
+                        <h3>Accounts Requiring Attention</h3>
+                        <div class="filter-controls">
+                            <input type="text" id="account-search" placeholder="Search service, email, domain..." oninput="filterAccounts()">
+                            <button class="btn btn-secondary" onclick="triggerImportModal()">📥 Import CSV</button>
+                        </div>
+                    </div>
+
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Service</th>
+                                <th>Username</th>
+                                <th>Official Domain</th>
+                                <th>Risk Level</th>
+                                <th>Issue</th>
+                                <th>MFA</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="accounts-table-body"></tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- TAB: Rotation Queue -->
+            <section id="tab-queue" class="tab-page">
+                <header class="page-header">
+                    <div>
+                        <h2>Batch Rotation Queue</h2>
+                        <p>AI-assisted navigation with automatic pausing at security boundaries (MFA, CAPTCHA, approval).</p>
+                    </div>
+                    <div class="header-actions">
+                        <button class="btn btn-secondary" onclick="initQueue('all')">Queue All Pending</button>
+                        <button class="btn btn-primary" onclick="initQueue('compromised')">Queue Compromised Only</button>
+                    </div>
+                </header>
+
+                <div class="card table-card">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Priority</th>
+                                <th>Service</th>
+                                <th>Username</th>
+                                <th>Domain</th>
+                                <th>Queue Status</th>
+                                <th>Confidence</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="queue-table-body"></tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- TAB: AI & Safety Activity -->
+            <section id="tab-ai-activity" class="tab-page">
+                <header class="page-header">
+                    <div>
+                        <h2>AI Reasoning & Safety Activity Stream</h2>
+                        <p>Live transparent view of AI navigation planning, confidence scores, and Safety Guardian decisions.</p>
+                    </div>
+                </header>
+                <div class="grid-2-col">
+                    <div class="card">
+                        <h3>🤖 Active AI Reasoning State</h3>
+                        <div class="summary-card" style="margin-top: 12px;" id="ai-active-state">
+                            <div class="summary-field"><span class="key">Provider:</span><span class="val">Google Gemini (via Sanitizer)</span></div>
+                            <div class="summary-field"><span class="key">Page Sanitization:</span><span class="val" style="color: var(--accent-emerald);">ACTIVE (Stripping Passwords/OTPs)</span></div>
+                            <div class="summary-field"><span class="key">Prompt Injection Guard:</span><span class="val" style="color: var(--accent-emerald);">ACTIVE</span></div>
+                            <div class="summary-field"><span class="key">Secret Boundary:</span><span class="val" style="color: var(--accent-emerald);">ENFORCED (0 Raw Credentials Exchanged)</span></div>
+                            <div class="summary-field"><span class="key">Safety Guardian Authority:</span><span class="val" style="color: var(--accent-blue);">AUTHORITATIVE (Can Veto AI)</span></div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <h3>🛡️ Architecture Division of Responsibility</h3>
+                        <ul style="margin: 12px 20px; font-size: 13px; line-height: 1.8; color: var(--text-muted);">
+                            <li><strong>BRAIN (AI):</strong> Reasons over sanitized DOM to discover settings.</li>
+                            <li><strong>HANDS (Playwright):</strong> Executes only safety-validated browser actions.</li>
+                            <li><strong>GUARDIAN (Safety Engine):</strong> Authoritative policy validator; blocks unsafe actions.</li>
+                            <li><strong>VAULT (Credential Boundary):</strong> Resolves symbolic references locally.</li>
+                            <li><strong>FINAL AUTHORITY (User):</strong> Explicit approval required before submission.</li>
+                        </ul>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB: Accounts -->
+            <section id="tab-accounts" class="tab-page">
+                <header class="page-header">
+                    <h2>Managed Accounts</h2>
+                    <button class="btn btn-primary" onclick="triggerAddAccountModal()">+ Add Account</button>
+                </header>
+                <div class="card table-card">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Service</th>
+                                <th>Username</th>
+                                <th>Domain</th>
+                                <th>Risk</th>
+                                <th>Rotation Status</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="all-accounts-table-body"></tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- TAB: Website Workflows -->
+            <section id="tab-workflows" class="tab-page">
+                <header class="page-header">
+                    <div>
+                        <h2>Website Workflow Memory</h2>
+                        <p>Non-sensitive knowledge base of discovered settings routes and form semantics.</p>
+                    </div>
+                </header>
+                <div class="card log-card">
+                    <pre id="workflow-memory-view">Loading workflow memory...</pre>
+                </div>
+            </section>
+
+            <!-- TAB: Integrations -->
+            <section id="tab-integrations" class="tab-page">
+                <header class="page-header">
+                    <h2>Password Manager & Keychain Handoff</h2>
+                </header>
+                <div class="grid-2-col">
+                    <div class="card">
+                        <h3>🍏 Apple Passwords & macOS Keychain</h3>
+                        <p style="color: var(--text-muted); margin: 10px 0; font-size: 13px;">
+                            Rotated credentials are automatically saved to the secure macOS system Keychain (via Security.framework). Apple Passwords CSV export format is ready for import into iCloud Keychain.
+                        </p>
+                    </div>
+                    <div class="card">
+                        <h3>🛡️ 1Password & Bitwarden</h3>
+                        <p style="color: var(--text-muted); margin: 10px 0; font-size: 13px;">
+                            Standard CSV export generators available for 1Password, Bitwarden, and Google Password Manager without exposing master passwords.
+                        </p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB: Adapters -->
+            <section id="tab-adapters" class="tab-page">
+                <header class="page-header">
+                    <h2>Registered Service Adapters & Platforms</h2>
+                </header>
+                <div class="grid-2-col" id="adapters-container"></div>
+            </section>
+
+            <!-- TAB: Doctor -->
+            <section id="tab-doctor" class="tab-page">
+                <header class="page-header">
+                    <h2>System Health & Diagnostics</h2>
+                    <button class="btn btn-secondary" onclick="loadDoctorData()">↻ Run Diagnostic</button>
+                </header>
+                <div class="card doctor-card" id="doctor-content">
+                    <p>Loading diagnostics...</p>
+                </div>
+            </section>
+
+            <!-- TAB: Audit Logs -->
+            <section id="tab-audit" class="tab-page">
+                <header class="page-header">
+                    <h2>Privacy-Preserving Audit Logs</h2>
+                </header>
+                <div class="card log-card">
+                    <pre id="audit-log-view">Loading audit logs...</pre>
+                </div>
+            </section>
+
+            <!-- TAB: Privacy -->
+            <section id="tab-privacy" class="tab-page">
+                <header class="page-header">
+                    <h2>Security & Privacy Invariants</h2>
+                </header>
+                <div class="card privacy-info-card">
+                    <h3>Zero Telemetry & Local Isolation Guarantee</h3>
+                    <ul style="margin: 16px 20px; line-height: 1.8; font-size: 13px;">
+                        <li><strong>Zero Plaintext Secret Storage:</strong> Passwords are never written to SQLite, persistent disk logs, or configuration files.</li>
+                        <li><strong>Zero Secret Transmission to AI:</strong> Gemini receives only sanitized DOM trees and outputs symbolic references.</li>
+                        <li><strong>Strict Domain Validation:</strong> Target website URLs are validated using <code>tldextract</code> registered domain checks against domain spoofing.</li>
+                        <li><strong>Human-in-the-Loop:</strong> Explicit review screen before any final password change submission.</li>
+                    </ul>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- MODAL: Step-by-Step Rotation Progress & Confirmation Card -->
+    <div class="modal-backdrop" id="rotation-modal">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h3 id="rotation-modal-title">⚠️ Confirm Password Rotation</h3>
+                <button class="close-btn" onclick="closeRotationModal()">✕</button>
+            </div>
+            
+            <div class="progress-steps" id="progress-steps-container">
+                <div class="step-item done" id="step-domain">✓ Website Verified</div>
+                <div class="step-item done" id="step-auth">✓ Account Detected</div>
+                <div class="step-item done" id="step-ai">✓ AI Discovered Security Path</div>
+                <div class="step-item done" id="step-safety">✓ Safety Guardian Approved</div>
+                <div class="step-item done" id="step-gen">✓ CSPRNG Secret Generated</div>
+                <div class="step-item waiting" id="step-human">⏳ Human Confirmation Required</div>
+            </div>
+
+            <div class="modal-body" id="rotation-modal-body"></div>
+            
+            <div class="modal-footer" id="rotation-modal-footer">
+                <button class="btn btn-secondary" onclick="closeRotationModal()">CANCEL</button>
+                <button class="btn btn-secondary" onclick="executeRotationStep(true)">REVIEW ONLY (DRY-RUN)</button>
+                <button class="btn btn-primary-danger" id="confirm-submit-btn" onclick="executeRotationStep(false)">CONFIRM & CHANGE PASSWORD</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL: Import CSV -->
+    <div class="modal-backdrop" id="import-modal">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h3>Import Accounts from CSV</h3>
+                <button class="close-btn" onclick="closeImportModal()">✕</button>
+            </div>
+            <div class="modal-body">
+                <p style="margin-bottom: 12px; font-size: 13px; color: var(--text-muted);">
+                    Upload an Apple Passwords export, 1Password/Bitwarden export, or CSV with columns: <code>service,username,url,status</code>
+                </p>
+                <input type="file" id="csv-file-input" accept=".csv">
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeImportModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="submitCSVImport()">Upload & Import</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

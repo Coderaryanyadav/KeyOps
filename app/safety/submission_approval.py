@@ -141,6 +141,14 @@ class SubmissionApprovalManager:
             if token.workflow_id != workflow_id:
                 return False, "DENIED: Token workflow ID mismatch."
 
+            # Priority 7 & 10: Reject placeholder or default fingerprints in production
+            if settings.environment == "production" and (
+                not current_form_fingerprint or
+                current_form_fingerprint in ("fp_default", "fp_resumed", "fingerprint_unknown", "default", "unknown")
+            ):
+                token.is_used = True
+                return False, "DENIED: Placeholder or unreliable form fingerprint is prohibited in production."
+
             if token.form_fingerprint != current_form_fingerprint:
                 token.is_used = True
                 return False, "DENIED: Form fingerprint changed after user approval. Re-approval required."

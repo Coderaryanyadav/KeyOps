@@ -143,9 +143,10 @@ class PasswordChangeVerifier:
             is_settings_path = any(p in parsed.path.lower() for p in ["settings", "security", "account", "profile", "dashboard"]) if current_url else False
 
             # Decision Matrix:
-            # SUCCESS requires at least 2 independent signals (e.g. dedicated alert + form disappearance, or alert + settings URL)
+            # SUCCESS strictly requires at least 2 independent signals:
+            # (Dedicated alert + form disappearance, or dedicated alert + verified settings URL)
             if has_success_alert and (form_disappeared_or_cleared or is_settings_path):
-                signals.append("Multi-signal positive confirmation achieved (alert + DOM state change).")
+                signals.append("Multi-signal positive confirmation achieved (alert + structural DOM/URL state change).")
                 return VerificationOutcome(
                     outcome="SUCCESS",
                     confidence=0.98,
@@ -153,12 +154,12 @@ class PasswordChangeVerifier:
                     details=f"Password rotation confirmed: '{success_alert_text}'"
                 )
             elif has_success_alert:
-                signals.append("Dedicated success alert confirmed.")
+                signals.append("Single weak/isolated signal: dedicated success alert observed, but form is unchanged and URL is unverified.")
                 return VerificationOutcome(
-                    outcome="SUCCESS",
-                    confidence=0.90,
+                    outcome="UNKNOWN",
+                    confidence=0.50,
                     signals=signals,
-                    details=f"Password rotation confirmed via alert: '{success_alert_text}'"
+                    details=f"Success alert '{success_alert_text}' found, but lacks independent structural confirmation (form disappearance or post-change settings URL). UNKNOWN."
                 )
 
             # If only generic page text matched without a dedicated alert element -> WEAK SIGNAL -> UNKNOWN

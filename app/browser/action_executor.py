@@ -118,20 +118,76 @@ class ControlledActionExecutor:
             if not is_valid:
                 raise ActionExecutionError(f"Submission DENIED by Approval Manager: {reason}")
 
-            # 3. Execute submission via exact submit control (NO blind Enter keyboard fallback)
+            # 3. Deterministically verify the submit control
+            verified_submit_control = None
+
             if target_id and target_id in element_map:
-                el = element_map[target_id]
-                await el.click()
-            else:
-                submit_btn = await page.query_selector("button[type='submit'], input[type='submit']")
-                if submit_btn:
-                    await submit_btn.click()
-                else:
-                    raise ActionExecutionError(
-                        "Submission DENIED: No verified submit button found on active password form. Blind Enter submission is prohibited."
+                candidate = element_map[target_id]
+                try:
+                    is_vis = await candidate.is_visible() if hasattr(candidate, "is_visible") else True
+                    is_en = await candidate.is_enabled() if hasattr(candidate, "is_enabled") else True
+                    tag = (await candidate.evaluate("e => e.tagName.toLowerCase()")) if hasattr(candidate, "evaluate") else "button"
+                    inp_type = (await candidate.evaluate("e => (e.getAttribute('type') || '').toLowerCase()")) if hasattr(candidate, "evaluate") else "submit"
+                    txt = (await candidate.inner_text() if hasattr(candidate, "inner_text") else "") or ""
+                    txt_lower = txt.strip().lower()
+
+                    # Reject destructive or non-submit elements
+                    destructive_keywords = ["delete", "remove", "cancel", "logout", "sign out", "back", "close", "destroy", "disable"]
+                    is_destructive = any(dk in txt_lower for dk in destructive_keywords)
+
+                    is_valid_submit = (
+                        is_vis and is_en and not is_destructive and (
+                            (tag == "button" and inp_type in ("submit", "")) or
+                            (tag == "input" and inp_type == "submit") or
+                            (inp_type == "submit") or
+                            any(sk in txt_lower for sk in ["save", "update", "change", "submit", "confirm", "set password", "save password"])
+                        )
                     )
 
-            await page.wait_for_timeout(2500)
+                    if is_valid_submit and tag not in ("a", "div", "span"):
+                        verified_submit_control = candidate
+                    elif is_destructive or tag in ("a", "div"):
+                        raise ActionExecutionError(
+                            f"Submission DENIED: Target element '{target_id}' (tag: <{tag}>, text: '{txt_lower[:30]}') is not an authorized submit control for password change."
+                        )
+                except ActionExecutionError:
+                    raise
+                except Exception:
+                    pass
+
+            if not verified_submit_control:
+                # Query page for explicit, standard submit buttons
+                submit_buttons = await page.query_selector_all("button[type='submit'], input[type='submit']") if hasattr(page, "query_selector_all") else []
+                if not submit_buttons and hasattr(page, "query_selector"):
+                    btn = await page.query_selector("button[type='submit'], input[type='submit']")
+                    if btn:
+                        submit_buttons = [btn]
+
+                for btn in submit_buttons:
+                    try:
+                        is_vis = await btn.is_visible() if hasattr(btn, "is_visible") else True
+                        is_en = await btn.is_enabled() if hasattr(btn, "is_enabled") else True
+                        txt = (await btn.inner_text() if hasattr(btn, "inner_text") else "") or ""
+                        txt_lower = txt.strip().lower()
+                        if is_vis and is_en and not any(dk in txt_lower for dk in ["delete", "remove", "cancel", "logout"]):
+                            verified_submit_control = btn
+                            break
+                    except Exception:
+                        continue
+
+            if not verified_submit_control:
+                raise ActionExecutionError(
+                    "Submission DENIED: No verified submit button found on active password form. Blind Enter submission is prohibited."
+                )
+
+            # 4. Execute click on verified submit control
+            await verified_submit_control.click()
+
+            if hasattr(page, "wait_for_timeout"):
+                try:
+                    await page.wait_for_timeout(2500)
+                except Exception:
+                    pass
             audit_logger.log_event("BROWSER_EXEC", f"Password change form submitted with explicit user approval token '{token_id[:12]}...'.")
             return True
 

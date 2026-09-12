@@ -21,18 +21,34 @@ def test_secret_boundary_isolation():
 def test_secret_boundary_sanitize_ai_payload():
     payload = {
         "url": "https://example.com/settings",
+        "title": "Account Settings",
         "username": "alice",
         "password": "RawPlaintextPassword!",
         "auth_token": "bearer_secret_123",
+        "database_dump": "SELECT * FROM users",
+        "secret_reference": "new_password",
         "nested": {
             "session_cookie": "secret_cookie_val",
-            "safe_field": "Account Settings"
+            "title": "Nested Security Modal",
+            "unknown_internal_key": "sensitive_data"
         }
     }
 
     sanitized = SecretBoundary.sanitize_payload_for_ai(payload)
 
-    assert sanitized["password"] == "[REDACTED_BY_SECRET_BOUNDARY]"
-    assert sanitized["auth_token"] == "[REDACTED_BY_SECRET_BOUNDARY]"
-    assert sanitized["nested"]["session_cookie"] == "[REDACTED_BY_SECRET_BOUNDARY]"
-    assert sanitized["nested"]["safe_field"] == "Account Settings"
+    # 1. Allowed fields are retained
+    assert sanitized["url"] == "https://example.com/settings"
+    assert sanitized["title"] == "Account Settings"
+    assert sanitized["secret_reference"] == "new_password"
+
+    # 2. Unknown & secret fields are dropped from top-level
+    assert "password" not in sanitized
+    assert "auth_token" not in sanitized
+    assert "database_dump" not in sanitized
+    assert "username" not in sanitized
+
+    # 3. Unknown & secret fields are dropped from nested structures
+    assert "nested" not in sanitized or "session_cookie" not in sanitized.get("nested", {})
+    assert "unknown_internal_key" not in sanitized.get("nested", {})
+    assert "RawPlaintextPassword!" not in str(sanitized)
+    assert "bearer_secret_123" not in str(sanitized)

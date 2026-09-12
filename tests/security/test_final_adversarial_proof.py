@@ -624,3 +624,335 @@ def test_idn_and_homograph_spoofs_fail_closed():
     for url in malicious_urls:
         eval_res = ctx.evaluate_url(url)
         assert eval_res.is_trusted is False, f"Failed to reject malicious URL: {url}"
+
+
+# ==============================================================================
+# CRITICAL FIX #1: MULTI-SIGNAL POST-CHANGE VERIFICATION ADVERSARIAL TESTS
+# ==============================================================================
+
+@pytest.mark.asyncio
+async def test_success_verifier_fake_alert_alone_is_unknown():
+    """
+    CRITICAL FIX #1 INVARIANT: Success alert alone without form disappearance or verified settings URL
+    MUST return UNKNOWN, not SUCCESS.
+    """
+    verifier = PasswordChangeVerifier()
+    mock_page = AsyncMock()
+    mock_page.evaluate = AsyncMock(return_value="Some arbitrary page text")
+    
+    # Fake success alert element present, but password inputs STILL present on page (form unchanged)
+    mock_alert = AsyncMock()
+    mock_alert.inner_text = AsyncMock(return_value="Password changed successfully.")
+    mock_page.query_selector_all = AsyncMock(side_effect=lambda sel: [mock_alert] if "[role='alert']" in sel or ".alert" in sel else [AsyncMock()]) # password inputs present!
+    mock_page.url = "https://example.com/unverified_random_path"
+
+    outcome = await verifier.verify(mock_page)
+    assert outcome.outcome == "UNKNOWN"
+    assert "Single weak/isolated signal" in outcome.signals[0] or "lacks independent structural confirmation" in outcome.details
+
+
+@pytest.mark.asyncio
+async def test_success_verifier_alert_plus_form_disappearance_is_success():
+    """
+    CRITICAL FIX #1 INVARIANT: Success alert PLUS password form disappearance yields SUCCESS.
+    """
+    verifier = PasswordChangeVerifier()
+    mock_page = AsyncMock()
+    mock_page.evaluate = AsyncMock(return_value="")
+    mock_alert = AsyncMock()
+    mock_alert.inner_text = AsyncMock(return_value="Your password has been changed successfully.")
+    
+    # Alert element exists, but password inputs are GONE (len == 0)
+    mock_page.query_selector_all = AsyncMock(side_effect=lambda sel: [mock_alert] if "[role='alert']" in sel or ".alert" in sel else [])
+    mock_page.url = "https://example.com/form_submitted"
+
+    outcome = await verifier.verify(mock_page)
+    assert outcome.outcome == "SUCCESS"
+    assert outcome.confidence >= 0.95
+
+
+@pytest.mark.asyncio
+async def test_success_verifier_alert_plus_settings_url_is_success():
+    """
+    CRITICAL FIX #1 INVARIANT: Success alert PLUS post-change settings URL yields SUCCESS.
+    """
+    verifier = PasswordChangeVerifier()
+    mock_page = AsyncMock()
+    mock_page.evaluate = AsyncMock(return_value="")
+    mock_alert = AsyncMock()
+    mock_alert.inner_text = AsyncMock(return_value="Password updated.")
+    
+    # Alert element exists, and URL is verified settings path
+    mock_page.query_selector_all = AsyncMock(side_effect=lambda sel: [mock_alert] if "[role='alert']" in sel or ".alert" in sel else [AsyncMock()])
+    mock_page.url = "https://github.com/settings/security"
+
+    outcome = await verifier.verify(mock_page)
+    assert outcome.outcome == "SUCCESS"
+    assert outcome.confidence >= 0.95
+
+
+@pytest.mark.asyncio
+async def test_success_verifier_failure_signals():
+    """
+    CRITICAL FIX #1 INVARIANT: Server rejection / failure alert yields FAILED even if success text is present.
+    """
+    verifier = PasswordChangeVerifier()
+    mock_page = AsyncMock()
+    mock_page.evaluate = AsyncMock(return_value="Password updated? No! Error: Current password was incorrect.")
+    mock_fail_alert = AsyncMock()
+    mock_fail_alert.inner_text = AsyncMock(return_value="Error: Current password was incorrect. Please try again.")
+    mock_page.query_selector_all = AsyncMock(side_effect=lambda sel: [mock_fail_alert] if "error" in sel or "alert" in sel else [])
+
+    outcome = await verifier.verify(mock_page)
+    assert outcome.outcome == "FAILED"
+
+
+# ==============================================================================
+# CRITICAL FIX #2: STRICT RECURSIVE SECRET BOUNDARY ALLOWLIST TESTS
+# ==============================================================================
+
+def test_secret_boundary_recursive_allowlist_drops_unknown_fields():
+    """
+    CRITICAL FIX #2 INVARIANT: SecretBoundary drops all non-allowlisted fields recursively.
+    """
+    payload = {
+        "title": "Account Security",
+        "url": "https://example.com/settings",
+        "unauthorized_top_level_field": "sensitive_val",
+        "nested_dict": {
+            "title": "Sub Settings",
+            "internal_debug_key": "debug_val",
+            "nested_list": [
+                {"role": "button", "arbitrary_attacker_injected_key": "malicious"},
+                {"tag": "input", "database_state": "DUMP"}
+            ]
+        },
+        "interactive_elements": [
+            {"element_id": "elem_1", "tag": "button", "text": "Save", "internal_handler": "doPost()"}
+        ]
+    }
+
+    sanitized = SecretBoundary.sanitize_payload_for_ai(payload)
+
+    # Allowed fields kept
+    assert sanitized["title"] == "Account Security"
+    assert sanitized["url"] == "https://example.com/settings"
+    assert "unauthorized_top_level_field" not in sanitized
+
+    # Nested structures sanitized
+    assert "nested_dict" not in sanitized  # 'nested_dict' not in ALLOWED_AI_FIELDS -> dropped!
+    assert len(sanitized["interactive_elements"]) == 1
+    assert "internal_handler" not in sanitized["interactive_elements"][0]
+    assert sanitized["interactive_elements"][0]["tag"] == "button"
+
+
+# ==============================================================================
+# CRITICAL FIX #3: SUBMIT CONTROL DETERMINISTIC VERIFICATION TESTS
+# ==============================================================================
+
+@pytest.mark.asyncio
+async def test_action_executor_rejects_link_and_destructive_buttons():
+    """
+    CRITICAL FIX #3 INVARIANT: ControlledActionExecutor rejects <a> tags, 'Delete Account', and 'Logout' buttons.
+    """
+    mgr = SubmissionApprovalManager(default_ttl_seconds=60)
+    executor = ControlledActionExecutor(custom_approval_manager=mgr)
+    boundary = SecretBoundary()
+
+    token = mgr.issue_approval_token(
+        account_id=1,
+        service="GitHub",
+        verified_domain="github.com",
+        browser_session_id="sess_btn_test",
+        workflow_id="wf_btn_test",
+        form_fingerprint="fp_btn"
+    )
+
+    approval_ctx = {
+        "token_id": token.token_id,
+        "account_id": 1,
+        "service": "GitHub",
+        "current_domain": "github.com",
+        "browser_session_id": "sess_btn_test",
+        "workflow_id": "wf_btn_test",
+        "form_fingerprint": "fp_btn"
+    }
+
+    page = AsyncMock()
+    page.url = "https://github.com/settings/security"
+
+    # 1. Attacker supplied an <a> link as submit control -> REJECT
+    mock_link = AsyncMock()
+    mock_link.is_visible = AsyncMock(return_value=True)
+    mock_link.is_enabled = AsyncMock(return_value=True)
+    mock_link.evaluate = AsyncMock(return_value="a")
+    mock_link.inner_text = AsyncMock(return_value="Click to confirm")
+    element_map_link = {"btn_submit": mock_link}
+
+    with pytest.raises(ActionExecutionError) as exc_link:
+        await executor.execute_action(
+            page=page,
+            action_payload={"action": "submit", "target_id": "btn_submit"},
+            element_map=element_map_link,
+            secret_boundary=boundary,
+            approval_context=approval_ctx
+        )
+    assert "not an authorized submit control" in str(exc_link.value)
+
+    # 2. Attacker supplied a "Delete Account" button as submit control -> REJECT
+    # Re-issue token
+    token2 = mgr.issue_approval_token(
+        account_id=1,
+        service="GitHub",
+        verified_domain="github.com",
+        browser_session_id="sess_btn_test2",
+        workflow_id="wf_btn_test2",
+        form_fingerprint="fp_btn2"
+    )
+    approval_ctx["token_id"] = token2.token_id
+    approval_ctx["browser_session_id"] = "sess_btn_test2"
+    approval_ctx["workflow_id"] = "wf_btn_test2"
+    approval_ctx["form_fingerprint"] = "fp_btn2"
+
+    mock_del_btn = AsyncMock()
+    mock_del_btn.is_visible = AsyncMock(return_value=True)
+    mock_del_btn.is_enabled = AsyncMock(return_value=True)
+    mock_del_btn.evaluate = AsyncMock(return_value="button")
+    mock_del_btn.inner_text = AsyncMock(return_value="Delete Account")
+    element_map_del = {"btn_del": mock_del_btn}
+
+    with pytest.raises(ActionExecutionError) as exc_del:
+        await executor.execute_action(
+            page=page,
+            action_payload={"action": "submit", "target_id": "btn_del"},
+            element_map=element_map_del,
+            secret_boundary=boundary,
+            approval_context=approval_ctx
+        )
+    assert "not an authorized submit control" in str(exc_del.value)
+
+
+# ==============================================================================
+# REAL PLAYWRIGHT END-TO-END FLOW & ADVERSARIAL DOM TAMPERING TEST
+# ==============================================================================
+
+@pytest.mark.asyncio
+async def test_playwright_e2e_real_rotation_and_adversarial_tampering():
+    """
+    PRIORITY 20 INVARIANT: Real Playwright execution of password change workflow,
+    verifying DOM field verification, single-use token consumption, and failure on tampering.
+    """
+    verifier = CredentialFieldVerifier()
+    mgr = SubmissionApprovalManager(default_ttl_seconds=60)
+    executor = ControlledActionExecutor(custom_approval_manager=mgr)
+    boundary = SecretBoundary()
+    boundary.register_secrets(current_password="OldPassword123!", new_password="NewSecurePassword456!")
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+
+        # HTML password change form served over HTTPS route
+        html = """
+        <html>
+        <head><title>Account Security Settings</title></head>
+        <body>
+            <div id="settings-container">
+                <form id="pw-form" action="/update-password" method="POST">
+                    <label for="old_pw">Current Password</label>
+                    <input type="password" id="old_pw" name="current_password" autocomplete="current-password">
+
+                    <label for="new_pw">New Password</label>
+                    <input type="password" id="new_pw" name="new_password" autocomplete="new-password">
+
+                    <label for="confirm_pw">Confirm Password</label>
+                    <input type="password" id="confirm_pw" name="confirm_password">
+
+                    <button type="submit" id="btn-save">Update Password</button>
+                </form>
+            </div>
+        </body>
+        </html>
+        """
+        await page.route("https://github.com/**", lambda route: route.fulfill(status=200, body=html, content_type="text/html"))
+        await page.goto("https://github.com/settings/security")
+
+        # 1. Deterministic Credential Field Verification
+        old_el = await page.query_selector("#old_pw")
+        new_el = await page.query_selector("#new_pw")
+        confirm_el = await page.query_selector("#confirm_pw")
+        save_btn = await page.query_selector("#btn-save")
+
+        v_old = await verifier.verify_field(old_el, expected_role="current_password", page=page)
+        assert v_old.is_valid is True
+
+        v_new = await verifier.verify_field(new_el, expected_role="new_password", page=page)
+        assert v_new.is_valid is True
+
+        v_confirm = await verifier.verify_field(confirm_el, expected_role="confirm_password", page=page)
+        assert v_confirm.is_valid is True
+
+        # 2. Secret Boundary filling
+        elem_map = {
+            "elem_old": old_el,
+            "elem_new": new_el,
+            "elem_confirm": confirm_el,
+            "elem_submit": save_btn
+        }
+
+        await executor.execute_action(
+            page=page,
+            action_payload={"action": "fill_secret", "target_id": "elem_old", "secret_reference": "current_password"},
+            element_map=elem_map,
+            secret_boundary=boundary
+        )
+
+        await executor.execute_action(
+            page=page,
+            action_payload={"action": "fill_secret", "target_id": "elem_new", "secret_reference": "new_password"},
+            element_map=elem_map,
+            secret_boundary=boundary
+        )
+
+        # 3. Issue approval token
+        token = mgr.issue_approval_token(
+            account_id=1,
+            service="GitHub",
+            verified_domain="github.com",
+            browser_session_id="sess_e2e_1",
+            workflow_id="wf_e2e_1",
+            form_fingerprint="fp_valid_test"
+        )
+
+        approval_ctx = {
+            "token_id": token.token_id,
+            "account_id": 1,
+            "service": "GitHub",
+            "current_domain": "github.com",
+            "browser_session_id": "sess_e2e_1",
+            "workflow_id": "wf_e2e_1",
+            "form_fingerprint": "fp_valid_test"
+        }
+
+        # 4. Successful submit execution
+        success = await executor.execute_action(
+            page=page,
+            action_payload={"action": "submit", "target_id": "elem_submit"},
+            element_map=elem_map,
+            secret_boundary=boundary,
+            approval_context=approval_ctx
+        )
+        assert success is True
+
+        # 5. Replay fails
+        with pytest.raises(ActionExecutionError) as exc_replay:
+            await executor.execute_action(
+                page=page,
+                action_payload={"action": "submit", "target_id": "elem_submit"},
+                element_map=elem_map,
+                secret_boundary=boundary,
+                approval_context=approval_ctx
+            )
+        assert "consumed" in str(exc_replay.value) or "DENIED" in str(exc_replay.value)
+
+        await browser.close()

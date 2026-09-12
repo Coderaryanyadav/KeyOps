@@ -1,3 +1,4 @@
+import asyncio
 import re
 from typing import List, Optional
 from urllib.parse import urlparse
@@ -56,9 +57,9 @@ class PasswordChangeVerifier:
     ]
 
     SUCCESS_KEYWORDS = [
-        re.compile(r"password\s+(has\s+been\s+)?(changed|updated|reset|saved)\b", re.IGNORECASE),
-        re.compile(r"successfully\s+(updated|changed|saved|reset)\b", re.IGNORECASE),
-        re.compile(r"(your\s+)?changes\s+have\s+been\s+saved\b", re.IGNORECASE),
+        re.compile(r"password\s+(?:has\s+been\s+)?(?:securely\s+|successfully\s+)?(?:changed|updated|reset|saved)\b", re.IGNORECASE),
+        re.compile(r"(?:successfully|securely)\s+(?:updated|changed|saved|reset)\b", re.IGNORECASE),
+        re.compile(r"(?:your\s+)?changes\s+(?:have\s+been\s+)?saved\b", re.IGNORECASE),
         re.compile(r"security\s+settings\s+updated\b", re.IGNORECASE),
         re.compile(r"new\s+password\s+activated\b", re.IGNORECASE),
     ]
@@ -137,13 +138,20 @@ class PasswordChangeVerifier:
 
             # 4. Check for Strong Signal C: URL redirect to verified post-change settings/account area
             raw_url = getattr(page, "url", "")
-            if callable(raw_url):
+            if isinstance(raw_url, str):
+                current_url = raw_url
+            elif callable(raw_url):
                 try:
-                    current_url = str(raw_url())
+                    res = raw_url()
+                    if asyncio.iscoroutine(res):
+                        try:
+                            current_url = str(await res)
+                        except Exception:
+                            current_url = ""
+                    else:
+                        current_url = str(res)
                 except Exception:
                     current_url = ""
-            elif isinstance(raw_url, str):
-                current_url = raw_url
             else:
                 current_url = ""
 

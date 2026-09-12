@@ -39,7 +39,10 @@ class PasswordAdapter(ABC):
 
     def can_handle(self, domain: str) -> bool:
         domain_lower = domain.lower()
-        return any(d.lower() in domain_lower or domain_lower in d.lower() for d in self.official_domains)
+        return any(
+            domain_lower == d.lower() or domain_lower.endswith("." + d.lower())
+            for d in self.official_domains
+        )
 
     @abstractmethod
     async def navigate_to_security(self, page: Page) -> bool:

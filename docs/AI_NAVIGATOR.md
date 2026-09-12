@@ -25,7 +25,7 @@ KeyOps includes an AI Navigation Agent designed to discover password management 
 
 ## 🔑 Secret Isolation Protocol
 
-The AI reasoning layer operates under absolute credential isolation:
+The AI reasoning layer operates under fail-closed credential isolation:
 - The AI never receives real passwords.
 - The AI only emits symbolic references (`secret_reference="current_password"` or `secret_reference="new_password"`).
 - `SecretBoundary` maps these references to real values inside the local browser layer only.

@@ -88,6 +88,18 @@ class DomainTrustContext:
             )
 
         if is_localhost and not is_prod:
+            if self.allowed_explicit_domains and not any(
+                any(d.startswith(h) or h in d for h in ("localhost", "127.0.0.1", "::1"))
+                for d in self.allowed_explicit_domains
+            ):
+                return DomainTrustResult(
+                    is_trusted=False,
+                    current_url=url,
+                    registrable_domain=hostname,
+                    service_name=self.expected_service,
+                    is_https=is_https,
+                    reason=f"Localhost URL not permitted when specific explicit domains {self.allowed_explicit_domains} are required."
+                )
             return DomainTrustResult(
                 is_trusted=True,
                 current_url=url,

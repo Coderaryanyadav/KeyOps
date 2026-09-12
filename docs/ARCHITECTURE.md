@@ -49,7 +49,7 @@ PAGE INSPECTOR ───────────► PAGE SANITIZER (Strips Passw
 - **Confidence Thresholds**: Enforces minimum composite confidence (0.85+ for fields, 0.90+ for submit).
 
 ### 3. The Vault (Secret Boundary)
-- **Absolute Credential Isolation**: Real passwords never enter AI prompts or application logs.
+- **Fail-Closed Credential Isolation**: Real passwords never enter AI prompts or application logs.
 - **Symbolic Resolution**: The AI emits references like `secret_reference="current_password"`. `SecretBoundary` resolves these strictly within the local browser automation layer.
 
 ### 4. The Hands (Controlled Browser Execution)

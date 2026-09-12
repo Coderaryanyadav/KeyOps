@@ -13,7 +13,7 @@ KeyOps operates on a strict defensive cybersecurity architecture where local det
 - **Use AI for Semantic Navigation**: Employs AI models (e.g., Google Gemini) exclusively for semantic reasoning (identifying navigational links and page context) over strictly sanitized DOM trees.
 - **Require Explicit Human Approval Before Submission**: Halts execution at the submission chokepoint and demands human approval via a single-use, time-limited, session-bound cryptographic approval token.
 - **Validate Domains Locally**: Deterministically validates target hostnames and live URLs against registered eTLD+1 rules with IDNA normalization and anti-spoofing checks.
-- **Isolate Secrets from AI (`SecretBoundary`)**: Enforces a 100% unidirectional boundary where raw credentials, session tokens, and cookies are never transmitted to AI providers.
+- **Isolate Secrets from AI (`SecretBoundary`)**: Enforces a fail-closed, drop-by-default recursive allowlist boundary where raw credentials, session tokens, and cookies are never transmitted to AI providers.
 - **Store Credentials in macOS Keychain**: Securely stores rotated passwords in the native macOS Keychain when explicitly requested by the user, returning distinct success/failure status codes.
 
 ---

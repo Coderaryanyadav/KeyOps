@@ -92,7 +92,7 @@ def run_doctor_diagnostics():
     table.add_row("Domain Trust Engine", "Strict eTLD+1 & Spoofing Defense", "[green]PASS[/green]")
 
     # 11. Secret Boundary
-    table.add_row("Secret Boundary", "100% Isolation (Zero Raw Passwords to AI)", "[green]PASS[/green]")
+    table.add_row("Secret Boundary", "Credentials Isolated from AI (Drop-by-Default Allowlist)", "[green]PASS[/green]")
 
     # 12. Privacy & Telemetry
     table.add_row("Privacy Controls", "Zero Telemetry / Local-First", "[green]PASS[/green]")

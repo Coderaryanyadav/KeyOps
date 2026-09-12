@@ -438,7 +438,7 @@ async function loadDoctorData() {
                 <div class="summary-field"><span class="key">Submission Approval Engine:</span><span class="val" style="color: var(--accent-emerald)">Active (Enforced)</span></div>
                 <div class="summary-field"><span class="key">Credential Field Verifier:</span><span class="val" style="color: var(--accent-emerald)">Active (Deterministic DOM)</span></div>
                 <div class="summary-field"><span class="key">Domain Trust Engine:</span><span class="val" style="color: var(--accent-emerald)">Active (Strict eTLD+1)</span></div>
-                <div class="summary-field"><span class="key">Telemetry Status:</span><span class="val" style="color: var(--accent-emerald)">Disabled (100% Privacy)</span></div>
+                <div class="summary-field"><span class="key">Telemetry Status:</span><span class="val" style="color: var(--accent-emerald)">Disabled (Local-First Privacy)</span></div>
             </div>
         `;
     } catch (err) {

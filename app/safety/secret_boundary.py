@@ -11,7 +11,7 @@ class SecretBoundaryViolation(Exception):
 
 class SecretBoundary:
     """
-    Absolute Isolation Boundary between AI reasoning layers and real credentials.
+    Unidirectional Isolation Boundary between AI reasoning layers and real credentials.
     The AI layer only receives and emits symbolic references (e.g., 'current_password').
     The SecretBoundary resolves these references to local secrets exclusively within
     the local browser automation layer.

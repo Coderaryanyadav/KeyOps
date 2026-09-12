@@ -63,7 +63,7 @@ PAGE INSPECTOR ───────────► PAGE SANITIZER (Strips Passw
 | **BRAIN** | AI Reasoning Engine | Reasons over sanitized DOM trees to discover settings paths. |
 | **GUARDIAN** | Safety Policy Engine | Authoritative policy engine. Vetoes unsafe/destructive actions and enforces confidence thresholds. |
 | **HANDS** | Controlled Playwright | Executes only narrowly scoped, pre-approved browser actions (`click`, `fill_secret`, `scroll`, `navigate`). |
-| **VAULT** | Secret Boundary | Absolute isolation barrier. Real passwords and OTPs **never** enter AI prompts. |
+| **VAULT** | Secret Boundary | Fail-closed isolation barrier. Real passwords and OTPs **never** enter AI prompts. |
 | **FINAL AUTHORITY** | The User | Explicit confirmation required before every password submission. |
 
 ---

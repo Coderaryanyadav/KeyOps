@@ -1,0 +1,62 @@
+name: Security Release Gate & Test Suite
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  security-gate:
+    name: Security & E2E Release Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv package manager
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Install dependencies
+        run: |
+          uv sync --all-extras
+
+      - name: Install Playwright Chromium with system dependencies
+        run: |
+          uv run playwright install --with-deps chromium
+
+      - name: 1. Python Syntax & Compilation Check
+        run: |
+          uv run python -m compileall app tests
+
+      - name: 2. Doctor System Diagnostic Check
+        run: |
+          uv run python -m app.cli.doctor
+
+      - name: 3. Run Unit Tests Suite
+        run: |
+          uv run pytest -v tests/unit
+
+      - name: 4. Run Security Invariants & Adversarial Proof Suite
+        run: |
+          uv run pytest -v tests/security
+
+      - name: 5. Run Real Playwright E2E & Attack Tests Suite
+        run: |
+          uv run pytest -v tests/integration
+
+      - name: 6. Run Complete Comprehensive Test Suite
+        run: |
+          uv run pytest -v
+
+      - name: 7. Run Security Gate Script
+        run: |
+          chmod +x ./scripts/security_gate.sh
+          ./scripts/security_gate.sh

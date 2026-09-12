@@ -113,7 +113,8 @@ async def test_invariant_6_and_7_submission_requires_single_use_approval():
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
-        await page.set_content("<form><input type='password' id='pw'><button type='submit'>Save</button></form>")
+        await page.route("https://github.com/**", lambda route: route.fulfill(status=200, body="<form><input type='password' id='pw'><button type='submit'>Save</button></form>", content_type="text/html"))
+        await page.goto("https://github.com/settings/security")
         
         with pytest.raises(ActionExecutionError) as exc:
             await executor.execute_action(

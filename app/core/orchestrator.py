@@ -317,20 +317,30 @@ class PasswordRotationOrchestrator:
             if verification.outcome == "SUCCESS":
                 sm.transition_to(WorkflowPhase.SUCCESS, verification.details)
                 
-                # Save to macOS Keychain if requested
+                # Save to macOS Keychain if requested with explicit semantic tracking
+                keychain_saved = False
                 if save_to_keychain and secret_boundary:
                     try:
                         new_pw = secret_boundary.resolve_secret("new_password")
-                        KeychainManager.store_credential(state.service, f"account_{state.account_id}", new_pw)
+                        keychain_saved = KeychainManager.store_credential(state.service, f"account_{state.account_id}", new_pw)
                     except Exception as ke:
                         audit_logger.log_event(state.service, f"Keychain store notice: {str(ke)}", level="WARNING")
+                        keychain_saved = False
+
+                outcome_status = "SUCCESS_KEYCHAIN_SAVED" if (keychain_saved or not save_to_keychain) else "SUCCESS_KEYCHAIN_SAVE_FAILED"
 
                 if on_progress_callback:
+                    msg = (
+                        f"Password rotation successfully confirmed and saved to Keychain! ({verification.details})"
+                        if keychain_saved
+                        else f"Password rotation confirmed on site, but Keychain save failed! ({verification.details})"
+                    )
                     await on_progress_callback({
                         "workflow_id": workflow_id,
                         "account_id": state.account_id,
                         "phase": WorkflowPhase.SUCCESS.value,
-                        "message": f"Password rotation successfully confirmed! ({verification.details})"
+                        "rotation_outcome": outcome_status,
+                        "message": msg
                     })
 
                 # Clear in-memory secret vault
@@ -339,8 +349,10 @@ class PasswordRotationOrchestrator:
 
                 return {
                     "status": "SUCCESS",
+                    "rotation_outcome": outcome_status,
                     "workflow_id": workflow_id,
                     "account_id": state.account_id,
+                    "keychain_saved": keychain_saved,
                     "details": verification.details
                 }
 
@@ -348,6 +360,7 @@ class PasswordRotationOrchestrator:
                 sm.transition_to(WorkflowPhase.FAILED, verification.details)
                 return {
                     "status": "FAILED",
+                    "rotation_outcome": "ROTATION_FAILED",
                     "workflow_id": workflow_id,
                     "account_id": state.account_id,
                     "details": verification.details
@@ -356,6 +369,7 @@ class PasswordRotationOrchestrator:
                 sm.transition_to(WorkflowPhase.LOW_CONFIDENCE, "Ambiguous outcome. Manual verification advised.")
                 return {
                     "status": "UNKNOWN",
+                    "rotation_outcome": "ROTATION_UNKNOWN",
                     "workflow_id": workflow_id,
                     "account_id": state.account_id,
                     "details": "Verification outcome was inconclusive. Please verify account in browser."
@@ -363,20 +377,34 @@ class PasswordRotationOrchestrator:
 
         except Exception as e:
             sm.transition_to(WorkflowPhase.FAILED, f"Submission error: {str(e)}")
-            return {"status": "FAILED", "workflow_id": workflow_id, "error": str(e)}
+            return {
+                "status": "FAILED",
+                "rotation_outcome": "ROTATION_FAILED",
+                "workflow_id": workflow_id,
+                "error": str(e)
+            }
 
     async def resume_workflow_after_human(
         self,
         workflow_id: str,
-        session_id: str,
+        session_id: Optional[str] = None,
         on_progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None
     ) -> Dict[str, Any]:
         """
         Resumes the exact same in-progress workflow after the user finishes solving MFA / CAPTCHA in the browser.
+        Strictly resolves authoritative session_id from WorkflowState and rejects client mismatch.
         """
         state = self._active_workflows.get(workflow_id)
         if not state:
-            return {"status": "FAILED", "message": "Workflow session not found."}
+            return {"status": "FAILED", "message": "Workflow session not found or expired."}
+
+        # Strict session check: never trust client-supplied session ID as identity
+        authoritative_session_id = state.session_id
+        if session_id and session_id != authoritative_session_id:
+            return {
+                "status": "FAILED",
+                "message": f"Session mismatch: client supplied '{session_id}', expected authoritative '{authoritative_session_id}'."
+            }
 
         page = self._active_pages.get(workflow_id)
         secret_boundary = self._secret_boundaries.get(workflow_id)
@@ -384,8 +412,8 @@ class PasswordRotationOrchestrator:
             return {"status": "FAILED", "message": "Browser page or secret context lost."}
 
         sm = WorkflowStateMachine(state)
-        # Invalidate any prior approval tokens for this session
-        approval_manager.invalidate_for_session(session_id, "Workflow resumed after human intervention.")
+        # Invalidate any prior approval tokens for this authoritative session
+        approval_manager.invalidate_for_session(authoritative_session_id, "Workflow resumed after human intervention.")
 
         trust_ctx = DomainTrustContext(expected_service=state.service, allowed_explicit_domains=[state.expected_domain])
 
@@ -418,7 +446,7 @@ class PasswordRotationOrchestrator:
             return {
                 "status": "READY_FOR_APPROVAL",
                 "workflow_id": workflow_id,
-                "session_id": session_id,
+                "session_id": authoritative_session_id,
                 "account_id": state.account_id,
                 "form_fingerprint": form_fp
             }

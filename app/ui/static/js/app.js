@@ -5,9 +5,7 @@ let ws = null;
 
 function getAuthHeaders(extraHeaders = {}) {
     const headers = { ...extraHeaders };
-    if (window.KEYOPS_API_TOKEN) {
-        headers["X-KeyOps-Auth-Token"] = window.KEYOPS_API_TOKEN;
-    }
+    // Requests rely on secure SameSite=Strict HttpOnly session cookies
     return headers;
 }
 
@@ -39,10 +37,20 @@ function setupNavigation() {
     });
 }
 
-function connectWebSocket() {
+async function connectWebSocket() {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const tokenParam = window.KEYOPS_API_TOKEN ? `?token=${encodeURIComponent(window.KEYOPS_API_TOKEN)}` : "";
-    ws = new WebSocket(`${protocol}//${window.location.host}/ws${tokenParam}`);
+    try {
+        // Request short-lived single-use ticket for clean WS handshake (no secrets in URL)
+        const ticketRes = await fetch("/api/ws/ticket", { method: "POST" });
+        if (ticketRes.ok) {
+            const ticketData = await ticketRes.json();
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws?ticket=${encodeURIComponent(ticketData.ticket)}`);
+        } else {
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+        }
+    } catch (e) {
+        ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+    }
 
     ws.onmessage = (event) => {
         const data = JSON.parse(event.data);

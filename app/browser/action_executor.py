@@ -81,16 +81,35 @@ class ControlledActionExecutor:
             token_id = approval_context.get("token_id", "")
             account_id = approval_context.get("account_id", 0)
             service = approval_context.get("service", "")
-            current_domain = approval_context.get("current_domain", "")
+            expected_domain = approval_context.get("current_domain", "")
             session_id = approval_context.get("browser_session_id", "")
             workflow_id = approval_context.get("workflow_id", "")
             form_fingerprint = approval_context.get("form_fingerprint", "")
 
+            # 1. Independent live browser URL inspection at the final submission boundary
+            live_url = page.url
+            if not live_url:
+                raise ActionExecutionError("Submission DENIED: Live browser page URL is empty.")
+
+            from app.safety.domain_trust import DomainTrustContext
+            trust_ctx = DomainTrustContext(expected_service=service, allowed_explicit_domains=[expected_domain])
+            trust_eval = trust_ctx.evaluate_url(live_url)
+            if not trust_eval.is_trusted:
+                audit_logger.log_event(
+                    service or "BROWSER_EXEC",
+                    f"Submission HALTED: Live page URL '{live_url}' failed domain trust: {trust_eval.reason}",
+                    level="ERROR"
+                )
+                raise ActionExecutionError(
+                    f"Submission DENIED: Live page URL '{live_url}' is not on trusted domain: {trust_eval.reason}"
+                )
+
+            # 2. Validate and atomically consume the approval token
             is_valid, reason = self._approval_manager.validate_and_consume_token(
                 token_id=token_id,
                 account_id=account_id,
                 service=service,
-                current_domain=current_domain,
+                current_domain=expected_domain,
                 browser_session_id=session_id,
                 workflow_id=workflow_id,
                 current_form_fingerprint=form_fingerprint
@@ -99,17 +118,18 @@ class ControlledActionExecutor:
             if not is_valid:
                 raise ActionExecutionError(f"Submission DENIED by Approval Manager: {reason}")
 
-            # Execute submission click
+            # 3. Execute submission via exact submit control (NO blind Enter keyboard fallback)
             if target_id and target_id in element_map:
                 el = element_map[target_id]
                 await el.click()
             else:
-                # Submit via form submission or primary button
                 submit_btn = await page.query_selector("button[type='submit'], input[type='submit']")
                 if submit_btn:
                     await submit_btn.click()
                 else:
-                    await page.keyboard.press("Enter")
+                    raise ActionExecutionError(
+                        "Submission DENIED: No verified submit button found on active password form. Blind Enter submission is prohibited."
+                    )
 
             await page.wait_for_timeout(2500)
             audit_logger.log_event("BROWSER_EXEC", f"Password change form submitted with explicit user approval token '{token_id[:12]}...'.")

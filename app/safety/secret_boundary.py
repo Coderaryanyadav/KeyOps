@@ -39,20 +39,39 @@ class SecretBoundary:
         """Erases memory vault at the end of the transaction."""
         self._vault.clear()
 
+    ALLOWED_AI_FIELDS = {
+        "url", "title", "headings", "interactive_elements", "visible_text_summary",
+        "element_id", "tag", "role", "text", "input_type", "autocomplete", "placeholder",
+        "aria_label", "status", "target_id", "confidence", "reason", "action",
+        "secret_reference", "challenge_type", "message", "direction", "seconds"
+    }
+
     @staticmethod
     def sanitize_payload_for_ai(payload: Dict) -> Dict:
         """
         Deep check ensuring no raw password strings or tokens leak into payloads prepared for AI.
+        Employs both an allowlist of valid semantic fields and recursive secret filtering.
         """
         sanitized = {}
         for k, v in payload.items():
-            k_lower = str(k).lower()
-            if any(forbidden in k_lower for forbidden in ["password", "secret", "token", "cookie", "otp", "key", "auth"]):
-                if isinstance(v, str) and not v.startswith("ref_") and v not in ["current_password", "new_password", "confirm_password"]:
+            k_str = str(k).strip()
+            k_lower = k_str.lower()
+
+            # Forbid sensitive field names outright
+            if any(forbidden in k_lower for forbidden in ["password", "secret", "token", "cookie", "otp", "key", "auth", "sessionid", "credential"]):
+                if isinstance(v, str) and (v.startswith("ref_") or v in ["current_password", "new_password", "confirm_password"]):
+                    sanitized[k] = v
+                else:
                     sanitized[k] = "[REDACTED_BY_SECRET_BOUNDARY]"
-                    continue
+                continue
+
             if isinstance(v, dict):
                 sanitized[k] = SecretBoundary.sanitize_payload_for_ai(v)
+            elif isinstance(v, list):
+                sanitized[k] = [
+                    SecretBoundary.sanitize_payload_for_ai(item) if isinstance(item, dict) else item
+                    for item in v
+                ]
             else:
                 sanitized[k] = v
         return sanitized

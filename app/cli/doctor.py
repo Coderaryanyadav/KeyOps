@@ -23,15 +23,33 @@ def run_doctor_diagnostics():
     py_ok = sys.version_info >= (3, 10)
     table.add_row("Python Environment", f"v{py_ver} (>= 3.10 required)", "[green]PASS[/green]" if py_ok else "[red]FAIL[/red]")
 
-    # 2. Playwright & Browser Check
+    # 2. Playwright Package Check
     try:
         import playwright
         pw_ok = True
     except ImportError:
         pw_ok = False
-    table.add_row("Playwright Engine", "Installed and accessible", "[green]PASS[/green]" if pw_ok else "[red]FAIL[/red]")
+    table.add_row("Playwright Package", "Installed in Python environment", "[green]PASS[/green]" if pw_ok else "[red]FAIL[/red]")
 
-    # 3. SQLite Database Check
+    # 3. Chromium Executable & Launch Check
+    chrom_exec_ok = False
+    chrom_launch_ok = False
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            exec_path = p.chromium.executable_path
+            chrom_exec_ok = bool(exec_path and os.path.exists(exec_path))
+            if chrom_exec_ok:
+                b = p.chromium.launch(headless=True, timeout=3000)
+                b.close()
+                chrom_launch_ok = True
+    except Exception:
+        pass
+
+    table.add_row("Chromium Executable", "Binary installed on disk", "[green]PASS[/green]" if chrom_exec_ok else "[yellow]NOT INSTALLED[/yellow]")
+    table.add_row("Chromium Launchability", "Headless browser process launch", "[green]PASS[/green]" if chrom_launch_ok else "[yellow]UNVERIFIED[/yellow]")
+
+    # 4. SQLite Database Check
     try:
         from app.database.session import SessionLocal
         from sqlalchemy import text

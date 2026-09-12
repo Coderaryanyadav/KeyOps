@@ -1,7 +1,7 @@
 import asyncio
 import secrets
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set
 from fastapi import FastAPI, Depends, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Header
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -33,27 +33,39 @@ app = FastAPI(title="Password Security Center API", version="1.0.0")
 UI_DIR = Path(__file__).parent.parent / "ui"
 app.mount("/static", StaticFiles(directory=str(UI_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(UI_DIR / "templates"))
+active_ui_sessions: Set[str] = set()
+active_ws_tickets: Dict[str, float] = {}  # ticket -> expiry_timestamp
 
 def verify_local_api_auth(request: Request) -> bool:
     """
     Strict Local API Authentication Guardian.
-    Guards against malicious websites on localhost attempting CSRF or unauthenticated mutations.
+    Accepts:
+    1. Header X-KeyOps-Auth-Token (matching master local_api_token)
+    2. Header Authorization: Bearer <token> (matching master local_api_token)
+    3. Cookie keyops_ui_session (matching active scoped browser session)
+    4. Header X-KeyOps-Session-Token (matching active scoped browser session)
     """
     token = request.headers.get("X-KeyOps-Auth-Token") or request.headers.get("X-Auth-Token")
     if not token and "Authorization" in request.headers:
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header[7:].strip()
-    if not token:
-        token = request.query_params.get("token", "")
 
     expected_token = settings.local_api_token
-    if not token or not secrets.compare_digest(token, expected_token):
-        raise HTTPException(
-            status_code=401,
-            detail="Unauthorized: Missing or invalid local API authorization token."
-        )
-    return True
+    if token and secrets.compare_digest(token, expected_token):
+        return True
+
+    # Check scoped browser session
+    cookie_session = request.cookies.get("keyops_ui_session")
+    header_session = request.headers.get("X-KeyOps-Session-Token")
+    session_candidate = cookie_session or header_session
+    if session_candidate and session_candidate in active_ui_sessions:
+        return True
+
+    raise HTTPException(
+        status_code=401,
+        detail="Unauthorized: Missing or invalid local API authorization token or session."
+    )
 
 class ConnectionManager:
     def __init__(self):
@@ -82,10 +94,33 @@ def on_startup():
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard_page(request: Request):
-    return templates.TemplateResponse("index.html", {
-        "request": request,
-        "api_token": settings.local_api_token
-    })
+    # Issue a scoped, unpredictable UI session token
+    ui_session_token = f"sess_ui_{secrets.token_hex(32)}"
+    active_ui_sessions.add(ui_session_token)
+
+    response = templates.TemplateResponse(
+        request=request,
+        name="index.html"
+    )
+    # Set HttpOnly, SameSite=Strict cookie for browser session
+    response.set_cookie(
+        key="keyops_ui_session",
+        value=ui_session_token,
+        httponly=True,
+        samesite="strict"
+    )
+    return response
+
+@app.post("/api/ws/ticket")
+def create_websocket_ticket(_auth: bool = Depends(verify_local_api_auth)):
+    """
+    Issues a short-lived (30s) single-use WebSocket connection ticket.
+    Prevents exposing the master API token in WebSocket connection URLs.
+    """
+    import time
+    ticket = f"wstik_{secrets.token_hex(16)}"
+    active_ws_tickets[ticket] = time.time() + 30.0
+    return {"ticket": ticket, "expires_in": 30}
 
 @app.get("/api/dashboard/overview")
 def get_dashboard_overview(db: Session = Depends(get_db)):
@@ -372,7 +407,22 @@ async def resume_rotation(
     _auth: bool = Depends(verify_local_api_auth)
 ):
     workflow_id = data.get("workflow_id")
-    session_id = data.get("session_id")
+    client_session_id = data.get("session_id")
+
+    if not workflow_id:
+        raise HTTPException(status_code=400, detail="Missing workflow_id.")
+
+    workflow_state = orchestrator.get_workflow_state(workflow_id)
+    if not workflow_state:
+        raise HTTPException(status_code=404, detail="Workflow session not found or expired.")
+
+    # Never trust client-supplied session ID as authoritative identity
+    authoritative_session_id = workflow_state.session_id
+    if client_session_id and client_session_id != authoritative_session_id:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Session mismatch: client supplied '{client_session_id}', expected authoritative '{authoritative_session_id}'."
+        )
 
     async def broadcast_progress(payload: Dict[str, Any]):
         await ws_manager.broadcast({
@@ -382,7 +432,7 @@ async def resume_rotation(
 
     res = await orchestrator.resume_workflow_after_human(
         workflow_id=workflow_id,
-        session_id=session_id,
+        session_id=authoritative_session_id,
         on_progress_callback=broadcast_progress
     )
     return res
@@ -390,6 +440,7 @@ async def resume_rotation(
 @app.get("/api/doctor")
 def run_doctor_diagnostics(db: Session = Depends(get_db)):
     import sys
+    import os
     
     # 1. Python runtime check
     py_ok = sys.version_info >= (3, 10)
@@ -397,35 +448,61 @@ def run_doctor_diagnostics(db: Session = Depends(get_db)):
     # 2. Playwright package check
     try:
         import playwright
-        pw_ok = True
+        pw_package_ok = True
     except ImportError:
-        pw_ok = False
+        pw_package_ok = False
         
-    # 3. Database connection check
+    # 3. Chromium executable check
+    chromium_exec_ok = False
+    chromium_path = ""
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            exec_path = p.chromium.executable_path
+            chromium_path = exec_path
+            chromium_exec_ok = bool(exec_path and os.path.exists(exec_path))
+    except Exception:
+        chromium_exec_ok = False
+
+    # 4. Chromium launch check
+    chromium_launch_ok = False
+    if chromium_exec_ok:
+        try:
+            from playwright.sync_api import sync_playwright
+            with sync_playwright() as p:
+                b = p.chromium.launch(headless=True, timeout=3000)
+                b.close()
+                chromium_launch_ok = True
+        except Exception:
+            chromium_launch_ok = False
+
+    # 5. Database connection check
     try:
         db.execute(text("SELECT 1"))
         db_ok = True
     except Exception:
         db_ok = False
         
-    # 4. Keychain availability check
+    # 6. Keychain availability check
     try:
         from app.integrations.keychain import KeychainManager
         keychain_ok = True
     except Exception:
         keychain_ok = False
         
-    # 5. Gemini configuration
+    # 7. Gemini configuration
     has_gemini = bool(settings.gemini_api_key)
     
-    # 6. Adapters count
+    # 8. Adapters count
     adapters_count = len(adapter_registry.list_adapters())
     
     return {
         "python_version": sys.version,
         "python_supported": py_ok,
-        "playwright_installed": pw_ok,
-        "chromium_available": pw_ok,
+        "playwright_package_installed": pw_package_ok,
+        "chromium_executable_available": chromium_exec_ok,
+        "chromium_launchable": chromium_launch_ok,
+        "chromium_path": chromium_path,
         "database_connected": db_ok,
         "sqlite_path": str(settings.db_url),
         "keychain_accessible": keychain_ok,
@@ -433,7 +510,7 @@ def run_doctor_diagnostics(db: Session = Depends(get_db)):
         "adapters_count": adapters_count,
         "local_api_auth_active": bool(settings.local_api_token),
         "telemetry_disabled": True,
-        "status": "HEALTHY" if (py_ok and pw_ok and db_ok) else "DEGRADED"
+        "status": "HEALTHY" if (py_ok and pw_package_ok and db_ok) else "DEGRADED"
     }
 
 @app.get("/api/workflows")
@@ -450,8 +527,24 @@ def get_audit_logs(db: Session = Depends(get_db)):
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    import time
+    # Check 1: Cookie-based browser session auth
+    cookie_session = websocket.cookies.get("keyops_ui_session")
+    is_authorized = bool(cookie_session and cookie_session in active_ui_sessions)
+
+    # Check 2: Short-lived single-use WebSocket ticket
+    ticket = websocket.query_params.get("ticket")
+    if ticket and ticket in active_ws_tickets:
+        expiry = active_ws_tickets.pop(ticket, 0)
+        if time.time() <= expiry:
+            is_authorized = True
+
+    # Check 3: Master token (CLI / Testing fallback)
     token = websocket.query_params.get("token")
-    if not token or not secrets.compare_digest(token, settings.local_api_token):
+    if token and secrets.compare_digest(token, settings.local_api_token):
+        is_authorized = True
+
+    if not is_authorized:
         await websocket.close(code=1008)
         return
 
@@ -461,4 +554,5 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.receive_text()
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
+
 

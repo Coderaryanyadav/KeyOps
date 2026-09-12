@@ -47,7 +47,7 @@ class DomainTrustContext:
 
         parsed = urlparse(url)
         is_https = parsed.scheme == "https"
-        is_localhost = parsed.hostname in ("127.0.0.1", "localhost") or (parsed.hostname and parsed.hostname.endswith(".local"))
+        is_localhost = parsed.hostname in ("127.0.0.1", "localhost")
 
         # In production, require HTTPS
         if not is_https and not is_localhost:

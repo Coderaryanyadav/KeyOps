@@ -46,8 +46,8 @@ class DomainValidator:
         if parsed.scheme not in ("http", "https"):
             raise DomainValidationError(f"Invalid URL scheme '{parsed.scheme}'. Only http and https are allowed.")
 
-        # Localhost exception for testing
-        if parsed.hostname in ("127.0.0.1", "localhost") or (parsed.hostname and parsed.hostname.endswith(".local")):
+        # Localhost exception for testing (strictly 127.0.0.1 or localhost, no arbitrary .local)
+        if parsed.hostname in ("127.0.0.1", "localhost"):
             return True
 
         extracted = tldextract.extract(url)
@@ -55,7 +55,8 @@ class DomainValidator:
         full_host = parsed.hostname.lower() if parsed.hostname else ""
 
         service_key = expected_service_name.lower()
-        official_set = self._registered_domains.get(service_key, set())
+        # Security: Always operate on a copy of the registered domains set to prevent global state pollution
+        official_set = set(self._registered_domains.get(service_key, set()))
 
         if allowed_explicit_domains:
             for d in allowed_explicit_domains:

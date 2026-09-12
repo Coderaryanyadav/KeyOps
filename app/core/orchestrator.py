@@ -56,10 +56,11 @@ class PasswordRotationOrchestrator:
         and halts at READY_FOR_APPROVAL.
         """
         workflow_id = f"wf_{uuid.uuid4().hex[:12]}"
-        session_id = f"sess_{uuid.uuid4().hex[:8]}"
+        session_id = f"sess_{secrets.token_hex(16)}"
 
         state = WorkflowState(
             workflow_id=workflow_id,
+            session_id=session_id,
             account_id=account_id,
             service=service,
             expected_domain=domain,
@@ -218,7 +219,7 @@ class PasswordRotationOrchestrator:
         self,
         workflow_id: str,
         approval_token_id: str,
-        session_id: str,
+        session_id: Optional[str] = None,
         save_to_keychain: bool = True,
         on_progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None
     ) -> Dict[str, Any]:
@@ -230,7 +231,17 @@ class PasswordRotationOrchestrator:
         if not state:
             return {"status": "FAILED", "message": "Workflow session not found or expired."}
 
+        # Session mismatch check
+        if session_id and session_id != state.session_id:
+            approval_manager.invalidate_token(approval_token_id, "Session ID mismatch detected")
+            return {"status": "FAILED", "message": "Session ID mismatch with authoritative workflow."}
+
+        authoritative_session_id = state.session_id
         page = self._active_pages.get(workflow_id)
+        if not page or page.is_closed():
+            approval_manager.invalidate_token(approval_token_id, "Browser page closed or lost")
+            return {"status": "FAILED", "message": "Browser page has been closed or lost."}
+
         secret_boundary = self._secret_boundaries.get(workflow_id)
         sm = WorkflowStateMachine(state)
 
@@ -241,15 +252,29 @@ class PasswordRotationOrchestrator:
                 "message": f"Illegal submission attempt: workflow is in state '{state.phase.value}', expected 'READY_FOR_APPROVAL'."
             }
 
+        # Live domain re-validation immediately before submission
+        trust_ctx = DomainTrustContext(expected_service=state.service, allowed_explicit_domains=[state.expected_domain])
+        trust_res = trust_ctx.evaluate_url(page.url)
+        if not trust_res.is_trusted:
+            sm.transition_to(WorkflowPhase.DOMAIN_VIOLATION, trust_res.reason)
+            approval_manager.invalidate_token(approval_token_id, f"Live page domain violation: {trust_res.reason}")
+            return {"status": "FAILED", "message": f"Domain trust violation at live page: {trust_res.reason}"}
+
         # Re-verify live form fingerprint before submission
-        current_fp = await self.navigator.compute_form_fingerprint(page) if page else ""
+        current_fp = await self.navigator.compute_form_fingerprint(page)
+        if current_fp != state.form_fingerprint and state.form_fingerprint not in ("fp_default", "fp_resumed"):
+            approval_manager.invalidate_token(approval_token_id, "Form DOM structure changed before submission")
+            return {
+                "status": "FAILED",
+                "message": f"Form DOM structure changed after user approval (expected {state.form_fingerprint}, got {current_fp}). Re-verification required."
+            }
 
         approval_ctx = {
             "token_id": approval_token_id,
             "account_id": state.account_id,
             "service": state.service,
             "current_domain": state.expected_domain,
-            "browser_session_id": session_id,
+            "browser_session_id": authoritative_session_id,
             "workflow_id": workflow_id,
             "form_fingerprint": current_fp
         }

@@ -243,3 +243,135 @@ async def test_success_verifier_rejects_missing_inputs_without_positive_evidence
     outcome = await verifier.verify(mock_page)
     assert outcome.outcome == "UNKNOWN"
     assert outcome.confidence == 0.50
+
+
+# ==============================================================================
+# 7. ADVERSARIAL ATTACKS: ACCOUNT & SESSION SUBSTITUTION
+# ==============================================================================
+
+@pytest.mark.asyncio
+async def test_account_and_session_substitution_rejected():
+    """
+    INVARIANT: Tokens bound to Account A / Session A / Workflow A cannot be consumed for Account B / Session B / Workflow B.
+    """
+    mgr = SubmissionApprovalManager(default_ttl_seconds=60)
+    token = mgr.issue_approval_token(
+        account_id=101,
+        service="GitHub",
+        verified_domain="github.com",
+        browser_session_id="sess_authoritative_101",
+        workflow_id="wf_authoritative_101",
+        form_fingerprint="fp_hash_101"
+    )
+
+    # Attack 1: Account ID swap (Account 102 attempts to use Token for Account 101)
+    valid_acc, reason_acc = mgr.validate_and_consume_token(
+        token_id=token.token_id,
+        account_id=102,
+        service="GitHub",
+        current_domain="github.com",
+        browser_session_id="sess_authoritative_101",
+        workflow_id="wf_authoritative_101",
+        current_form_fingerprint="fp_hash_101"
+    )
+    assert valid_acc is False
+    assert "account mismatch" in reason_acc.lower()
+
+    # Attack 2: Session ID swap (Attacker manufactures arbitrary session_id)
+    valid_sess, reason_sess = mgr.validate_and_consume_token(
+        token_id=token.token_id,
+        account_id=101,
+        service="GitHub",
+        current_domain="github.com",
+        browser_session_id="sess_attacker_manufactured",
+        workflow_id="wf_authoritative_101",
+        current_form_fingerprint="fp_hash_101"
+    )
+    assert valid_sess is False
+    assert "session mismatch" in reason_sess.lower()
+
+    # Attack 3: Workflow ID swap
+    valid_wf, reason_wf = mgr.validate_and_consume_token(
+        token_id=token.token_id,
+        account_id=101,
+        service="GitHub",
+        current_domain="github.com",
+        browser_session_id="sess_authoritative_101",
+        workflow_id="wf_attacker_swap",
+        current_form_fingerprint="fp_hash_101"
+    )
+    assert valid_wf is False
+    assert "workflow" in reason_wf.lower()
+
+
+# ==============================================================================
+# 8. ADVERSARIAL ATTACKS: LIVE DOMAIN REDIRECT ATTACK BEFORE SUBMIT
+# ==============================================================================
+
+@pytest.mark.asyncio
+async def test_live_domain_redirect_attack_aborts_submission():
+    """
+    INVARIANT: If an attacker redirects the browser page right before submission,
+    live domain revalidation must fail closed.
+    """
+    from app.safety.domain_trust import DomainTrustContext
+    context = DomainTrustContext(expected_service="GitHub", allowed_explicit_domains=["github.com"])
+    
+    # Official github.com is trusted
+    res_legit = context.evaluate_url("https://github.com/settings/security")
+    assert res_legit.is_trusted is True
+
+    # Attacker redirect targets
+    attack_urls = [
+        "https://github.com.attacker.com/settings/security",
+        "https://attacker.com/redirect?next=https://github.com",
+        "https://github-security.com/login",
+        "http://github.com/settings/security",
+        "https://github.com@attacker.com/",
+        "https://gith\u0443b.com/settings/security", # punycode / Cyrillic spoof
+    ]
+
+    for attack_url in attack_urls:
+        res = context.evaluate_url(attack_url)
+        assert res.is_trusted is False, f"Domain trust unexpectedly allowed malicious URL: {attack_url}"
+
+
+# ==============================================================================
+# 9. STATIC SECRET LEAK SCAN ACROSS CODEBASE
+# ==============================================================================
+
+def test_static_secret_leak_audit():
+    """
+    INVARIANT: No logger or print statement logs plaintext passwords or tokens,
+    and no API schema returns plaintext passwords.
+    """
+    import os
+    import re
+
+    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    app_dir = os.path.join(base_dir, "app")
+
+    dangerous_patterns = [
+        re.compile(r'print\s*\([^)]*\{[^}]*\b(?:new_password|current_password|generated_password|secret_value|password)\b[^}]*\}[^)]*\)', re.IGNORECASE),
+        re.compile(r'print\s*\([^)]*,\s*\b(?:new_password|current_password|generated_password|secret_value|password)\b\s*[,)]', re.IGNORECASE),
+        re.compile(r'logger\.(info|debug|warning|error)\s*\([^)]*f["\'][^)]*\{[^}]*(?:password|new_pass|current_pass|generated_pass)[^}]*\}[^)]*\)', re.IGNORECASE),
+        re.compile(r'return\s*\{[^}]*["\'](new_password|current_password|generated_password)["\']\s*:\s*(?:password|new_password|current_password)', re.IGNORECASE),
+    ]
+
+    violations = []
+    for root, _, files in os.walk(app_dir):
+        for file in files:
+            if file.endswith(".py"):
+                filepath = os.path.join(root, file)
+                with open(filepath, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+                for idx, line in enumerate(lines, 1):
+                    # Skip sanitizer and comment lines
+                    if "redact" in line.lower() or "sanitize" in line.lower() or line.strip().startswith("#"):
+                        continue
+                    for pat in dangerous_patterns:
+                        if pat.search(line):
+                            violations.append(f"{filepath}:{idx}: {line.strip()}")
+
+    assert len(violations) == 0, f"Found dangerous secret leak patterns: {violations}"
+

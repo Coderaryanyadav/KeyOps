@@ -265,8 +265,8 @@ async def approve_rotation(
             detail=f"Approval rejected: Form DOM structure changed after preparation. Re-verification required."
         )
 
-    # 7. Issue single-use approval token
-    session_id = data.get("session_id") or f"sess_{workflow_id}"
+    # 7. Issue single-use approval token bound to authoritative session
+    session_id = workflow_state.session_id
     token = approval_manager.issue_approval_token(
         account_id=acc.id,
         service=acc.service,
@@ -293,14 +293,30 @@ async def execute_rotation(
 ):
     workflow_id = data.get("workflow_id")
     token_id = data.get("approval_token_id")
-    session_id = data.get("session_id")
-    account_id = data.get("account_id")
     dry_run = data.get("dry_run", False)
     save_to_keychain = data.get("save_to_keychain", True)
 
-    acc = db.query(Account).filter(Account.id == account_id).first()
+    if not workflow_id:
+        raise HTTPException(status_code=400, detail="Missing workflow_id.")
+
+    workflow_state = orchestrator.get_workflow_state(workflow_id)
+    if not workflow_state:
+        raise HTTPException(status_code=404, detail="Workflow session not found or expired.")
+
+    # Strict account binding: Resolve authoritative account_id from workflow_state
+    authoritative_account_id = workflow_state.account_id
+    if "account_id" in data and data["account_id"] is not None:
+        if data["account_id"] != authoritative_account_id:
+            raise HTTPException(status_code=400, detail="Account mismatch with authoritative workflow.")
+
+    # Strict session binding: Verify session_id if provided by client
+    if "session_id" in data and data["session_id"] is not None:
+        if data["session_id"] != workflow_state.session_id:
+            raise HTTPException(status_code=400, detail="Session mismatch with authoritative workflow.")
+
+    acc = db.query(Account).filter(Account.id == authoritative_account_id).first()
     if not acc:
-        raise HTTPException(status_code=404, detail="Account not found")
+        raise HTTPException(status_code=404, detail="Account not found in database.")
 
     if not token_id and not dry_run:
         raise HTTPException(status_code=400, detail="Submission rejected: Missing human approval token.")
@@ -319,7 +335,7 @@ async def execute_rotation(
     exec_result = await orchestrator.execute_approved_submission(
         workflow_id=workflow_id,
         approval_token_id=token_id,
-        session_id=session_id,
+        session_id=workflow_state.session_id,
         save_to_keychain=save_to_keychain,
         on_progress_callback=broadcast_progress
     )

@@ -38,6 +38,7 @@ class WorkflowState(BaseModel):
     CRITICAL SECURITY INVARIANT: NEVER stores raw passwords, keys, tokens, or credentials.
     """
     workflow_id: str = Field(default_factory=lambda: f"wf_{uuid.uuid4().hex[:12]}")
+    session_id: str = Field(default_factory=lambda: f"sess_{uuid.uuid4().hex[:12]}")
     account_id: int
     service: str
     expected_domain: str

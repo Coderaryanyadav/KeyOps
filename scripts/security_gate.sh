@@ -50,8 +50,9 @@ run_gate "Integration & Real Playwright Attacks (tests/integration)" "$RUNNER py
 run_gate "Complete Pytest Suite" "$RUNNER pytest -q"
 
 echo ""
-echo "4. Static Security Scans:"
+echo "4. Static Security & Dependency Gates:"
 run_gate "Static Security & Token Isolation Scan" "$RUNNER python scripts/static_security_scan.py"
+run_gate "Dependency Vulnerability Audit (pip-audit)" "$RUNNER pip-audit"
 
 echo ""
 echo "================================================================================"

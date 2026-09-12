@@ -47,10 +47,24 @@ class DomainTrustContext:
 
         parsed = urlparse(url)
         is_https = parsed.scheme == "https"
-        is_localhost = parsed.hostname in ("127.0.0.1", "localhost")
+        hostname = (parsed.hostname or "").lower()
+        is_localhost = hostname in ("127.0.0.1", "localhost")
+
+        from app.config import settings
+        is_prod = (getattr(settings, "environment", "production") or "").lower() == "production"
+
+        if is_localhost and is_prod and not (self.expected_service in ("local", "custom", "test") or "localhost" in self.allowed_explicit_domains or "127.0.0.1" in self.allowed_explicit_domains):
+            return DomainTrustResult(
+                is_trusted=False,
+                current_url=url,
+                registrable_domain=hostname,
+                service_name=self.expected_service,
+                is_https=is_https,
+                reason="Localhost/127.0.0.1 cannot bypass service domain validation in production."
+            )
 
         # In production, require HTTPS
-        if not is_https and not is_localhost:
+        if not is_https and not (is_localhost and not is_prod):
             return DomainTrustResult(
                 is_trusted=False,
                 current_url=url,
@@ -73,7 +87,7 @@ class DomainTrustContext:
                 reason="IDN Punycode / Homograph domain detected."
             )
 
-        if is_localhost:
+        if is_localhost and not is_prod:
             return DomainTrustResult(
                 is_trusted=True,
                 current_url=url,

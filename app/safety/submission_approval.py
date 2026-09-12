@@ -3,12 +3,14 @@ import time
 import threading
 from typing import Dict, Optional, Tuple, Any
 from pydantic import BaseModel, Field
+from app.config import settings
 from app.core.audit_logger import audit_logger
 
 class ApprovalToken(BaseModel):
     """
     Cryptographic single-use token authorizing a specific password change submission.
-    Bound strictly to account, service, verified domain, browser session, workflow, and form fingerprint.
+    Bound strictly to account, service, verified domain, browser session, workflow,
+    form fingerprint, and process instance ID.
     """
     token_id: str
     account_id: int
@@ -17,6 +19,7 @@ class ApprovalToken(BaseModel):
     browser_session_id: str
     workflow_id: str
     form_fingerprint: str
+    process_instance_id: str
     created_at: float = Field(default_factory=time.time)
     expires_at: float
     is_used: bool = False
@@ -31,7 +34,7 @@ class SubmissionApprovalManager:
     Enforces that:
     1. AI CAN NEVER trigger submissions autonomously.
     2. Approval tokens are cryptographically secure, single-use, and time-bounded.
-    3. Any mismatch in account, service, domain, session, or form fingerprint instantly invalidates approval.
+    3. Any mismatch in account, service, domain, session, process instance, or form fingerprint instantly invalidates approval.
     """
 
     def __init__(self, default_ttl_seconds: int = 120):
@@ -68,6 +71,7 @@ class SubmissionApprovalManager:
             browser_session_id=browser_session_id,
             workflow_id=workflow_id,
             form_fingerprint=form_fingerprint,
+            process_instance_id=settings.process_instance_id,
             created_at=now,
             expires_at=now + ttl,
             is_used=False
@@ -101,7 +105,7 @@ class SubmissionApprovalManager:
     ) -> Tuple[bool, str]:
         """
         Validates token invariants and atomically marks it as used.
-        Fails closed on any discrepancy or expiration.
+        Fails closed on any discrepancy, process restart, or expiration.
         """
         with self._lock:
             if not token_id or token_id not in self._tokens:
@@ -111,6 +115,10 @@ class SubmissionApprovalManager:
 
             if token.is_used:
                 return False, "DENIED: Approval token has already been consumed (single-use invariant violated)."
+
+            if token.process_instance_id != settings.process_instance_id:
+                token.is_used = True
+                return False, "DENIED: Approval token was issued by a prior or terminated process instance."
 
             now = time.time()
             if now > token.expires_at:

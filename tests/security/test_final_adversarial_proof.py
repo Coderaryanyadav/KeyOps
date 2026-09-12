@@ -293,24 +293,53 @@ def test_page_sanitizer_url_sanitization():
 @pytest.mark.asyncio
 async def test_success_verifier_adversarial_phishing_text():
     """
-    INVARIANT: Attacker page displaying fake text without positive confirmation alerts
+    PRIORITY 2 INVARIANT: Attacker page displaying fake text without positive confirmation alerts
     returns UNKNOWN, never SUCCESS.
     """
     verifier = PasswordChangeVerifier()
     mock_page = AsyncMock()
-    # Fake phishing text in regular body text
     mock_page.evaluate = AsyncMock(return_value="Password changed. Your password is now secure. Click here to continue.")
     mock_page.query_selector_all = AsyncMock(return_value=[])
 
     outcome = await verifier.verify(mock_page)
-    # The verifier checks matched success patterns or alerts; if it matches regex it returns with details
-    assert outcome.outcome in ("SUCCESS", "UNKNOWN")
+    # Generic body text alone MUST NOT produce SUCCESS
+    assert outcome.outcome == "UNKNOWN"
+    assert "Weak signal" in outcome.signals[0] or "generic body text" in outcome.signals[0]
+
+
+@pytest.mark.asyncio
+async def test_success_verifier_multi_signal_matrix():
+    """
+    PRIORITY 2 INVARIANT: Success verifier distinguishes explicit failure, weak signals, and multi-signal success.
+    """
+    verifier = PasswordChangeVerifier()
+
+    # 1. Explicit Server-side rejection -> FAILED
+    fail_page = AsyncMock()
+    fail_page.evaluate = AsyncMock(return_value="Error: Current password was incorrect. Please try again.")
+    fail_page.query_selector_all = AsyncMock(return_value=[])
+    fail_outcome = await verifier.verify(fail_page)
+    assert fail_outcome.outcome == "FAILED"
+
+    # 2. Generic "Saved successfully" in body text without alert -> UNKNOWN
+    saved_page = AsyncMock()
+    saved_page.evaluate = AsyncMock(return_value="Saved successfully.")
+    saved_page.query_selector_all = AsyncMock(return_value=[])
+    saved_outcome = await verifier.verify(saved_page)
+    assert saved_outcome.outcome == "UNKNOWN"
+
+    # 3. Empty page -> UNKNOWN
+    empty_page = AsyncMock()
+    empty_page.evaluate = AsyncMock(return_value="")
+    empty_page.query_selector_all = AsyncMock(return_value=[])
+    empty_outcome = await verifier.verify(empty_page)
+    assert empty_outcome.outcome == "UNKNOWN"
 
 
 @pytest.mark.asyncio
 async def test_orchestrator_explicit_keychain_semantics():
     """
-    INVARIANT: Orchestrator distinguishes SUCCESS_KEYCHAIN_SAVED vs SUCCESS_KEYCHAIN_SAVE_FAILED.
+    PRIORITY 12 INVARIANT: Orchestrator distinguishes SUCCESS_KEYCHAIN_SAVED vs SUCCESS_KEYCHAIN_SAVE_FAILED.
     """
     orch = PasswordRotationOrchestrator()
     state = WorkflowState(
@@ -333,10 +362,8 @@ async def test_orchestrator_explicit_keychain_semantics():
     boundary.register_secrets(new_password="NewSecretPassword123!")
     orch._secret_boundaries["wf_kc_test"] = boundary
 
-    # Mock action executor to succeed
     orch.executor.execute_action = AsyncMock(return_value=True)
 
-    # Mock success verifier to return SUCCESS
     with patch("app.core.orchestrator.password_change_verifier.verify", new=AsyncMock(return_value=VerificationOutcome(outcome="SUCCESS", confidence=0.99, details="Confirmed"))):
         # Case 1: Keychain store succeeds
         with patch.object(KeychainManager, "store_credential", return_value=True):
@@ -365,3 +392,235 @@ async def test_orchestrator_explicit_keychain_semantics():
             assert res_failed_kc["status"] == "SUCCESS"
             assert res_failed_kc["rotation_outcome"] == "SUCCESS_KEYCHAIN_SAVE_FAILED"
             assert res_failed_kc["keychain_saved"] is False
+
+
+# ==============================================================================
+# PRIORITY 1: WEBSOCKET AUTHENTICATION ADVERSARIAL TESTS
+# ==============================================================================
+
+def test_websocket_rejects_master_api_token_in_query(client):
+    """
+    PRIORITY 1 INVARIANT: Master API token in ?token= MUST NOT authenticate the WebSocket.
+    """
+    with pytest.raises(Exception):
+        with client.websocket_connect(f"/ws?token={settings.local_api_token}"):
+            pass
+
+
+def test_websocket_rejects_random_query_token(client):
+    """
+    PRIORITY 1 INVARIANT: Random token in query params is rejected.
+    """
+    with pytest.raises(Exception):
+        with client.websocket_connect("/ws?token=random_attacker_token_123"):
+            pass
+
+
+def test_websocket_rejects_expired_ws_ticket(client):
+    """
+    PRIORITY 1 INVARIANT: Expired WebSocket tickets are rejected fail-closed.
+    """
+    expired_ticket = "wstik_expired_test_ticket"
+    active_ws_tickets[expired_ticket] = {
+        "session_id": "sess_123",
+        "created_at": time.time() - 300,  # 5 minutes ago
+        "ttl": 30
+    }
+    with pytest.raises(Exception):
+        with client.websocket_connect(f"/ws?ticket={expired_ticket}"):
+            pass
+    assert expired_ticket not in active_ws_tickets
+
+
+def test_websocket_rejects_replayed_ticket(client, auth_headers):
+    """
+    PRIORITY 1 INVARIANT: Single-use ticket cannot be replayed.
+    """
+    res = client.post("/api/ws/ticket", headers=auth_headers)
+    ticket = res.json()["ticket"]
+
+    # First connection consumes ticket
+    with client.websocket_connect(f"/ws?ticket={ticket}"):
+        pass
+
+    # Replay attempt fails
+    with pytest.raises(Exception):
+        with client.websocket_connect(f"/ws?ticket={ticket}"):
+            pass
+
+
+# ==============================================================================
+# PRIORITY 3: STRICT CREDENTIAL FIELD VERIFIER ADVERSARIAL TESTS
+# ==============================================================================
+
+@pytest.mark.asyncio
+async def test_credential_field_verifier_malicious_dom_cases():
+    """
+    PRIORITY 3 INVARIANT: Deterministic DOM verification rejects unsafe inputs (text, hidden, disabled, readonly, wrong roles).
+    """
+    verifier = CredentialFieldVerifier()
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+
+        html = """
+        <html>
+        <body>
+            <form id="test-form">
+                <!-- 1. Text input named password (Attacker honeypot) -->
+                <input type="text" id="text-pw" name="password" placeholder="Enter password">
+
+                <!-- 2. Hidden password input -->
+                <input type="password" id="hidden-pw" name="current_password" style="display:none;">
+
+                <!-- 3. Disabled password input -->
+                <input type="password" id="disabled-pw" name="new_password" disabled>
+
+                <!-- 4. Readonly password input -->
+                <input type="password" id="readonly-pw" name="new_password" readonly>
+
+                <!-- 5. Confirm password input requested as new_password (Role Mismatch) -->
+                <input type="password" id="confirm-pw" name="confirm_password" placeholder="Confirm Password">
+
+                <!-- 6. Current password input requested as new_password (Role Mismatch) -->
+                <input type="password" id="current-pw" name="current_password" placeholder="Current Password">
+
+                <!-- 7. Valid New Password Input -->
+                <input type="password" id="valid-new-pw" name="new_password" autocomplete="new-password" placeholder="New Password">
+            </form>
+        </body>
+        </html>
+        """
+        await page.set_content(html)
+
+        # 1. Text input named password -> REJECT
+        el1 = await page.query_selector("#text-pw")
+        r1 = await verifier.verify_field(el1, expected_role="current_password", page=page)
+        assert r1.is_valid is False
+        assert r1.field_role == "invalid_type"
+
+        # 2. Hidden password input -> REJECT
+        el2 = await page.query_selector("#hidden-pw")
+        r2 = await verifier.verify_field(el2, expected_role="current_password", page=page)
+        assert r2.is_valid is False
+
+        # 3. Disabled password input -> REJECT
+        el3 = await page.query_selector("#disabled-pw")
+        r3 = await verifier.verify_field(el3, expected_role="new_password", page=page)
+        assert r3.is_valid is False
+
+        # 4. Readonly password input -> REJECT
+        el4 = await page.query_selector("#readonly-pw")
+        r4 = await verifier.verify_field(el4, expected_role="new_password", page=page)
+        assert r4.is_valid is False
+
+        # 5. Confirm requested as new -> REJECT
+        el5 = await page.query_selector("#confirm-pw")
+        r5 = await verifier.verify_field(el5, expected_role="new_password", page=page)
+        assert r5.is_valid is False
+        assert r5.field_role == "confirm_password"
+
+        # 6. Current requested as new -> REJECT
+        el6 = await page.query_selector("#current-pw")
+        r6 = await verifier.verify_field(el6, expected_role="new_password", page=page)
+        assert r6.is_valid is False
+        assert r6.field_role == "current_password"
+
+        # 7. Valid new password -> ACCEPT
+        el7 = await page.query_selector("#valid-new-pw")
+        r7 = await verifier.verify_field(el7, expected_role="new_password", page=page)
+        assert r7.is_valid is True
+        assert r7.field_role == "new_password"
+
+        await browser.close()
+
+
+# ==============================================================================
+# PRIORITY 4: PROCESS RESTART / CRASH SECURITY MODEL
+# ==============================================================================
+
+def test_process_restart_invalidates_active_approval_tokens():
+    """
+    PRIORITY 4 INVARIANT: When process restarts (process_instance_id changes),
+    all previously issued approval tokens are immediately invalidated.
+    """
+    mgr = SubmissionApprovalManager(default_ttl_seconds=60)
+    original_instance_id = settings.process_instance_id
+
+    # 1. Issue approval token in process instance A
+    token = mgr.issue_approval_token(
+        account_id=1,
+        service="GitHub",
+        verified_domain="github.com",
+        browser_session_id="sess_proc_test",
+        workflow_id="wf_proc_test",
+        form_fingerprint="fp_proc"
+    )
+
+    # 2. Simulate process restart -> new instance ID generated
+    new_instance_id = f"proc_{secrets.token_hex(16)}"
+    try:
+        settings.process_instance_id = new_instance_id
+
+        # 3. Attempt to validate the token under new process instance
+        valid, reason = mgr.validate_and_consume_token(
+            token_id=token.token_id,
+            account_id=1,
+            service="GitHub",
+            current_domain="github.com",
+            browser_session_id="sess_proc_test",
+            workflow_id="wf_proc_test",
+            current_form_fingerprint="fp_proc"
+        )
+        assert valid is False
+        assert "prior or terminated process" in reason or "process" in reason.lower()
+    finally:
+        settings.process_instance_id = original_instance_id
+
+
+# ==============================================================================
+# PRIORITY 5 & 6: STRICT LOCALHOST & IDN HOMOGRAPH NORMALIZATION
+# ==============================================================================
+
+def test_localhost_rejected_in_production_environment():
+    """
+    PRIORITY 5 INVARIANT: In production environment, localhost and 127.0.0.1
+    are not trusted service domains unless explicitly registered for a local service.
+    """
+    original_env = settings.environment
+    try:
+        settings.environment = "production"
+        ctx = DomainTrustContext(expected_service="github", allowed_explicit_domains=["github.com"])
+
+        # http://localhost and 127.0.0.1 must be rejected
+        res_local = ctx.evaluate_url("http://localhost:8080/settings")
+        assert res_local.is_trusted is False
+
+        res_ip = ctx.evaluate_url("http://127.0.0.1:8080/settings")
+        assert res_ip.is_trusted is False
+    finally:
+        settings.environment = original_env
+
+
+def test_idn_and_homograph_spoofs_fail_closed():
+    """
+    PRIORITY 6 INVARIANT: Hostnames with IDN punycode, Cyrillic lookalikes,
+    userinfo, and parser tricks are rejected fail-closed.
+    """
+    ctx = DomainTrustContext(expected_service="github", allowed_explicit_domains=["github.com"])
+
+    malicious_urls = [
+        "https://xn--pple-43d.com/login",               # Punycode apple lookalike
+        "https://github.com@attacker.com/settings",       # Userinfo spoof
+        "https://github.com.attacker.com/settings",       # Subdomain spoof
+        "https://attacker.com/github.com",               # Path spoof
+        "https://g1thub.com/settings",                   # Typosquat
+        "javascript:alert(1)",                           # Dangerous scheme
+        "data:text/html,<h1>Phish</h1>",                 # Dangerous scheme
+        "http://github.com/settings",                    # Insecure HTTP
+    ]
+
+    for url in malicious_urls:
+        eval_res = ctx.evaluate_url(url)
+        assert eval_res.is_trusted is False, f"Failed to reject malicious URL: {url}"

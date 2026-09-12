@@ -42,6 +42,8 @@ class AppSettings(BaseModel):
     telemetry_enabled: bool = False
     port: int = 8443
     host: str = "127.0.0.1"
+    environment: str = Field(default_factory=lambda: os.environ.get("KEYOPS_ENV", "test").lower())
+    process_instance_id: str = Field(default_factory=lambda: f"proc_{secrets.token_hex(16)}")
     local_api_token: str = Field(default_factory=lambda: os.environ.get("KEYOPS_API_TOKEN", "") or secrets.token_urlsafe(32))
 
     # AI Reasoning Configuration

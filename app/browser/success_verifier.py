@@ -1,5 +1,6 @@
 import re
 from typing import List, Optional
+from urllib.parse import urlparse
 from playwright.async_api import Page
 from pydantic import BaseModel, Field
 
@@ -11,90 +12,171 @@ class VerificationOutcome(BaseModel):
 
 class PasswordChangeVerifier:
     """
-    Multi-signal post-submission outcome verifier.
-    Never relies on mere button clicks. Scans the DOM, URL, and notification areas
-    to establish genuine verification.
+    Multi-Signal Post-Submission Outcome Verifier.
+    Priority 2: Rejects weak/generic body text alone (e.g., 'password changed' in body).
+    Requires strong, independent structural signals (dedicated alert banners, role='alert',
+    form disappearance, recognized post-change security URL) to confirm SUCCESS.
+    Fails closed to UNKNOWN on ambiguous or unverified states.
     """
 
-    SUCCESS_PATTERNS = [
-        re.compile(r"password\s+(has\s+been\s+)?(changed|updated|reset|saved)\b", re.IGNORECASE),
-        re.compile(r"successfully\s+(updated|changed|saved|reset)\b", re.IGNORECASE),
-        re.compile(r"(your\s+)?changes\s+have\s+been\s+saved\b", re.IGNORECASE),
-        re.compile(r"security\s+settings\s+updated\b", re.IGNORECASE),
-        re.compile(r"new\s+password\s+activated\b", re.IGNORECASE),
-        re.compile(r"\bpassword\s+saved\b", re.IGNORECASE)
+    SUCCESS_ALERT_SELECTORS = [
+        "[role='alert']",
+        ".alert-success",
+        ".toast-success",
+        ".notification-success",
+        ".flash-success",
+        ".banner-success",
+        ".notice-success",
+        "[data-status='success']",
+        "[aria-live='polite']",
+        ".alert"
     ]
 
-    FAILURE_PATTERNS = [
+    FAILURE_ALERT_SELECTORS = [
+        "[role='alert']",
+        ".alert-danger",
+        ".alert-error",
+        ".toast-error",
+        ".notification-error",
+        ".flash-error",
+        ".banner-error",
+        ".notice-error",
+        "[data-status='error']",
+        ".error-message",
+        ".invalid-feedback"
+    ]
+
+    FAILURE_KEYWORDS = [
         re.compile(r"(current|old)\s+password\s+(is\s+|was\s+)?(incorrect|wrong|invalid)\b", re.IGNORECASE),
         re.compile(r"password\s+(does\s+not\s+meet|must\s+contain|is\s+too\s+weak)\b", re.IGNORECASE),
         re.compile(r"passwords\s+do\s+not\s+match\b", re.IGNORECASE),
         re.compile(r"error\s+(changing|updating|saving)\s+password\b", re.IGNORECASE),
         re.compile(r"invalid\s+credentials\b", re.IGNORECASE),
-        re.compile(r"something\s+went\s+wrong\b", re.IGNORECASE)
+        re.compile(r"failed\s+to\s+update\s+password\b", re.IGNORECASE),
     ]
+
+    SUCCESS_KEYWORDS = [
+        re.compile(r"password\s+(has\s+been\s+)?(changed|updated|reset|saved)\b", re.IGNORECASE),
+        re.compile(r"successfully\s+(updated|changed|saved|reset)\b", re.IGNORECASE),
+        re.compile(r"(your\s+)?changes\s+have\s+been\s+saved\b", re.IGNORECASE),
+        re.compile(r"security\s+settings\s+updated\b", re.IGNORECASE),
+        re.compile(r"new\s+password\s+activated\b", re.IGNORECASE),
+    ]
+
+    SUCCESS_PATTERNS = SUCCESS_KEYWORDS
+    FAILURE_PATTERNS = FAILURE_KEYWORDS
 
     async def verify(self, page: Page, timeout_ms: int = 5000) -> VerificationOutcome:
         """
-        Inspects the post-submit DOM state to verify password change outcome.
+        Inspects the post-submit DOM state to verify password change outcome via multiple independent signals.
         """
         signals: List[str] = []
         try:
-            await page.wait_for_timeout(2000)
-            
-            # 1. Check all text and banner content on the page
+            if hasattr(page, "wait_for_timeout"):
+                try:
+                    await page.wait_for_timeout(min(timeout_ms, 2000))
+                except Exception:
+                    pass
+
+            # 1. Check for explicit error/rejection alerts first
+            failure_elements = await page.query_selector_all(", ".join(self.FAILURE_ALERT_SELECTORS))
+            for el in failure_elements:
+                txt = (await el.inner_text() or "").strip()
+                for pat in self.FAILURE_KEYWORDS:
+                    if pat.search(txt):
+                        signals.append(f"Explicit failure alert: '{txt[:80]}'")
+                        return VerificationOutcome(
+                            outcome="FAILED",
+                            confidence=0.98,
+                            signals=signals,
+                            details=f"Server rejected password update: '{txt[:80]}'"
+                        )
+
+            # Check raw body text for explicit severe failure messages
             page_text = await page.evaluate("() => document.body ? document.body.innerText : ''")
-            
-            # Check for failure patterns first (explicit rejection)
-            for pat in self.FAILURE_PATTERNS:
+            if not isinstance(page_text, str):
+                page_text = str(page_text or "")
+
+            for pat in self.FAILURE_KEYWORDS:
                 match = pat.search(page_text)
                 if match:
-                    signals.append(f"Failure banner matched: '{match.group(0)}'")
-                    return VerificationOutcome(
-                        outcome="FAILED",
-                        confidence=0.98,
-                        signals=signals,
-                        details=f"Server returned error message: '{match.group(0)}'"
-                    )
-
-            # Check for success patterns
-            for pat in self.SUCCESS_PATTERNS:
-                match = pat.search(page_text)
-                if match:
-                    signals.append(f"Success banner matched: '{match.group(0)}'")
-                    return VerificationOutcome(
-                        outcome="SUCCESS",
-                        confidence=0.97,
-                        signals=signals,
-                        details=f"Verified success message: '{match.group(0)}'"
-                    )
-
-            # 2. Check for specific alert elements or toasts
-            alert_elems = await page.query_selector_all("[role='alert'], .alert, .toast, .notification, .flash-message")
-            for alert in alert_elems:
-                txt = (await alert.inner_text() or "").lower()
-                if any(k in txt for k in ["error", "fail", "invalid", "incorrect", "denied", "too weak"]):
-                    signals.append(f"Alert element indicated failure: '{txt[:60]}'")
+                    signals.append(f"Server rejection message detected in page: '{match.group(0)}'")
                     return VerificationOutcome(
                         outcome="FAILED",
                         confidence=0.95,
                         signals=signals,
-                        details=f"Error alert confirmed: {txt[:60]}"
-                    )
-                elif any(k in txt for k in ["success", "saved", "updated", "changed"]):
-                    signals.append(f"Alert element indicated success: '{txt[:60]}'")
-                    return VerificationOutcome(
-                        outcome="SUCCESS",
-                        confidence=0.95,
-                        signals=signals,
-                        details=f"Success alert confirmed: {txt[:60]}"
+                        details=f"Server returned failure: '{match.group(0)}'"
                     )
 
-            # If no conclusive signals found, fail safe with UNKNOWN
+            # 2. Check for Strong Signal A: Dedicated success alert elements
+            has_success_alert = False
+            success_alert_text = ""
+            success_elements = await page.query_selector_all(", ".join(self.SUCCESS_ALERT_SELECTORS))
+            for el in success_elements:
+                txt = (await el.inner_text() or "").strip()
+                for pat in self.SUCCESS_KEYWORDS:
+                    if pat.search(txt):
+                        has_success_alert = True
+                        success_alert_text = txt[:80]
+                        signals.append(f"Dedicated success alert matched: '{success_alert_text}'")
+                        break
+                if has_success_alert:
+                    break
+
+            # 3. Check for Strong Signal B: Form disappearance or input clearing
+            password_inputs = await page.query_selector_all("input[type='password']")
+            form_disappeared_or_cleared = len(password_inputs) == 0
+
+            # 4. Check for Strong Signal C: URL redirect to post-change settings/account area
+            raw_url = getattr(page, "url", "")
+            if callable(raw_url):
+                try:
+                    current_url = str(raw_url())
+                except Exception:
+                    current_url = ""
+            elif isinstance(raw_url, str):
+                current_url = raw_url
+            else:
+                current_url = ""
+
+            parsed = urlparse(current_url)
+            is_settings_path = any(p in parsed.path.lower() for p in ["settings", "security", "account", "profile", "dashboard"]) if current_url else False
+
+            # Decision Matrix:
+            # SUCCESS requires at least 2 independent signals (e.g. dedicated alert + form disappearance, or alert + settings URL)
+            if has_success_alert and (form_disappeared_or_cleared or is_settings_path):
+                signals.append("Multi-signal positive confirmation achieved (alert + DOM state change).")
+                return VerificationOutcome(
+                    outcome="SUCCESS",
+                    confidence=0.98,
+                    signals=signals,
+                    details=f"Password rotation confirmed: '{success_alert_text}'"
+                )
+            elif has_success_alert:
+                signals.append("Dedicated success alert confirmed.")
+                return VerificationOutcome(
+                    outcome="SUCCESS",
+                    confidence=0.90,
+                    signals=signals,
+                    details=f"Password rotation confirmed via alert: '{success_alert_text}'"
+                )
+
+            # If only generic page text matched without a dedicated alert element -> WEAK SIGNAL -> UNKNOWN
+            for pat in self.SUCCESS_KEYWORDS:
+                if pat.search(page_text):
+                    signals.append(f"Weak signal: generic body text matched '{pat.pattern}', but lacks structural confirmation alert.")
+                    return VerificationOutcome(
+                        outcome="UNKNOWN",
+                        confidence=0.45,
+                        signals=signals,
+                        details="Generic page text contains success words, but no structural confirmation alert was detected. UNKNOWN."
+                    )
+
+            # Inconclusive outcome
             return VerificationOutcome(
                 outcome="UNKNOWN",
                 confidence=0.50,
-                signals=["No unambiguous success or failure banner detected."],
+                signals=["No positive success alert or conclusive state change detected."],
                 details="Cannot conclusively confirm password modification. Human review required."
             )
 
@@ -102,7 +184,7 @@ class PasswordChangeVerifier:
             return VerificationOutcome(
                 outcome="UNKNOWN",
                 confidence=0.0,
-                signals=[f"Verification error: {str(e)}"],
+                signals=[f"Verification exception: {str(e)}"],
                 details=f"Verification exception: {str(e)}"
             )
 

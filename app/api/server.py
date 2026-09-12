@@ -528,21 +528,21 @@ def get_audit_logs(db: Session = Depends(get_db)):
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     import time
+    # Priority 1: WebSocket authentication MUST ONLY accept:
+    # 1. Authenticated SameSite=Strict HttpOnly browser session cookie (keyops_ui_session)
+    # 2. Short-lived (30s) single-use WebSocket connection ticket (?ticket=wstik_...)
+    # Master API token in URL query parameter is STRICTLY PROHIBITED.
+    
     # Check 1: Cookie-based browser session auth
     cookie_session = websocket.cookies.get("keyops_ui_session")
     is_authorized = bool(cookie_session and cookie_session in active_ui_sessions)
 
-    # Check 2: Short-lived single-use WebSocket ticket
+    # Check 2: Short-lived single-use WebSocket ticket (atomically consumed & popped)
     ticket = websocket.query_params.get("ticket")
     if ticket and ticket in active_ws_tickets:
         expiry = active_ws_tickets.pop(ticket, 0)
         if time.time() <= expiry:
             is_authorized = True
-
-    # Check 3: Master token (CLI / Testing fallback)
-    token = websocket.query_params.get("token")
-    if token and secrets.compare_digest(token, settings.local_api_token):
-        is_authorized = True
 
     if not is_authorized:
         await websocket.close(code=1008)

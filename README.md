@@ -144,6 +144,28 @@ pytest
 
 ---
 
+## 🛡️ Honest Capabilities & Security Boundaries
+
+KeyOps is designed under strict defensive security principles:
+
+### What KeyOps CAN Do
+- Automate password-change navigation for authorized user accounts.
+- Generate high-entropy passwords locally via CSPRNG (`secrets`).
+- Isolate secrets from AI models (`SecretBoundary` zero-leak guarantee).
+- Enforce mandatory human approval tokens before credential submission.
+- Locally validate domains against eTLD+1 rules with IDNA anti-spoofing.
+- Save rotated credentials to macOS Keychain on demand.
+
+### What KeyOps CANNOT / DOES NOT Do
+- Does **NOT** bypass MFA, 2FA, OTP, CAPTCHA, passkeys, or bot protection (it yields control to the human).
+- Does **NOT** guarantee cryptographic remote password confirmation on arbitrary generic websites (fails closed to `UNKNOWN`).
+- Does **NOT** persist raw credentials across process restarts.
+- Does **NOT** operate on unauthorized accounts.
+
+See [SECURITY.md](SECURITY.md) for full threat model and invariant definitions.
+
+---
+
 ## 📚 Documentation
 
 - [Architecture Deep-Dive](docs/ARCHITECTURE.md)

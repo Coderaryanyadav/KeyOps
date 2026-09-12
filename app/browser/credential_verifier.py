@@ -12,9 +12,11 @@ class FieldVerificationResult(BaseModel):
 class CredentialFieldVerifier:
     """
     Authoritative Local Credential Field Verifier.
-    The AI only makes a semantic recommendation. This local verifier deterministically
-    inspects the live DOM element to verify that it is genuinely a credential field
-    matching the intended role before any secret can be resolved.
+    Priority 3: Strictly deterministic local verifier.
+    A password secret is ONLY resolved when deterministic DOM inspection positively
+    confirms the exact intended credential role (current_password, new_password, confirm_password).
+    Dangerous fallbacks (e.g. type=text, disabled, hidden, readonly, or generic keywords)
+    are strictly rejected fail-closed.
     """
 
     CONFIDENCE_THRESHOLD = 0.85
@@ -29,7 +31,6 @@ class CredentialFieldVerifier:
         Deterministically evaluates DOM semantics and state of the target element.
         """
         evidence: List[str] = []
-        score = 0.0
 
         try:
             # 1. Basic Element Validity & Visibility Checks
@@ -48,7 +49,7 @@ class CredentialFieldVerifier:
                     is_valid=False,
                     field_role="hidden",
                     confidence=0.0,
-                    rejection_reason="Target element is not visible on page."
+                    rejection_reason="Target element is hidden/not visible on page."
                 )
 
             is_enabled = await element.is_enabled()
@@ -57,7 +58,16 @@ class CredentialFieldVerifier:
                     is_valid=False,
                     field_role="disabled",
                     confidence=0.0,
-                    rejection_reason="Target element is disabled or readonly."
+                    rejection_reason="Target element is disabled."
+                )
+
+            is_readonly = await element.evaluate("el => el.readOnly === true || el.hasAttribute('readonly')")
+            if is_readonly:
+                return FieldVerificationResult(
+                    is_valid=False,
+                    field_role="readonly",
+                    confidence=0.0,
+                    rejection_reason="Target element is readonly."
                 )
 
             # 2. Extract DOM Attributes
@@ -82,79 +92,59 @@ class CredentialFieldVerifier:
             aria_label = attrs["aria_label"]
             label_text = attrs["label_text"]
 
-            # 3. Type Checking
-            if inp_type == "password":
-                score += 0.40
-                evidence.append("type='password'")
-            elif inp_type in ("text", ""):
-                # Some sites use text inputs with masked styling or custom password controls
-                score += 0.10
-                evidence.append("type='text' (fallback evaluation)")
-            else:
+            # 3. Strict Type Checking (Password inputs mandatory for credential filling)
+            if inp_type != "password":
                 return FieldVerificationResult(
                     is_valid=False,
                     field_role="invalid_type",
                     confidence=0.0,
-                    rejection_reason=f"Prohibited input type '{inp_type}' for credential operation."
+                    rejection_reason=f"Type mismatch: Prohibited input type '{inp_type}'. Real credentials require type='password'."
                 )
 
-            # 4. Autocomplete Semantics (Gold Standard)
+            evidence.append("type='password'")
+
+            combined_text = f"{name} {el_id} {placeholder} {aria_label} {label_text}".lower()
             detected_role = "unknown"
-            if autocomplete == "current-password":
-                score += 0.55
+            score = 0.50  # Base score for type='password'
+
+            # 4. Strict Role Classification
+            is_confirm = any(k in combined_text for k in ["confirm", "verify", "repeat", "reenter", "re-enter", "confirmpassword", "confirm_password", "pass2", "pwd2", "password_confirmation"])
+            is_current = any(k in combined_text for k in ["current", "old", "existing", "curr", "present", "oldpassword", "currentpassword", "old_password", "current_password"])
+            is_new = any(k in combined_text for k in ["new", "create", "newpassword", "passwd_new", "user_password", "new_password", "set_password", "pass1", "pwd1"])
+
+            if autocomplete == "current-password" or is_current:
                 detected_role = "current_password"
-                evidence.append("autocomplete='current-password'")
-            elif autocomplete == "new-password":
-                score += 0.55
-                # New password could be new or confirm
-                detected_role = "new_password"
-                evidence.append("autocomplete='new-password'")
-            elif "password" in autocomplete:
-                score += 0.30
-                evidence.append(f"autocomplete='{autocomplete}'")
-
-            # 5. Text / Semantic Keywords Analysis
-            combined_text = f"{name} {el_id} {placeholder} {aria_label} {label_text}"
-
-            if any(k in combined_text for k in ["confirm", "verify", "repeat", "reenter", "re-enter", "confirm_password", "confirmpassword"]):
+                score += 0.45
+                evidence.append("autocomplete/semantics indicate current password")
+            elif is_confirm:
                 detected_role = "confirm_password"
                 score += 0.45
-                evidence.append("keywords indicate confirmation field")
-            elif any(k in combined_text for k in ["current", "old", "existing", "curr", "present", "oldpassword", "currentpassword"]):
-                detected_role = "current_password"
+                evidence.append("semantics indicate confirmation password")
+            elif autocomplete == "new-password" and not is_confirm:
+                detected_role = "new_password"
                 score += 0.45
-                evidence.append("keywords indicate current/old password field")
-            elif any(k in combined_text for k in ["new", "create", "newpassword", "passwd_new", "user_password"]):
-                if detected_role != "confirm_password":
-                    detected_role = "new_password"
-                    score += 0.40
-                    evidence.append("keywords indicate new password field")
-            elif "password" in combined_text or "pass" in combined_text:
-                score += 0.25
-                evidence.append("generic password keywords present")
+                evidence.append("autocomplete='new-password'")
+            elif is_new:
+                detected_role = "new_password"
+                score += 0.40
+                evidence.append("semantics indicate new password")
+            else:
+                # Generic password input without role disambiguation
+                detected_role = "unknown"
 
+            # 5. Role Match Evaluation
             final_confidence = min(1.0, score)
 
-            # Check if detected role matches or is compatible with expected role
-            role_matches = False
-            if expected_role == detected_role:
-                role_matches = True
-            elif expected_role in ("new_password", "confirm_password") and detected_role in ("new_password", "confirm_password", "unknown") and final_confidence >= self.CONFIDENCE_THRESHOLD:
-                # Accept new_password / confirm_password when confidence is high
-                role_matches = True
-            elif expected_role == "current_password" and (detected_role == "current_password" or (detected_role == "unknown" and final_confidence >= 0.70)):
-                role_matches = True
-
-            if final_confidence < 0.70:
+            if detected_role == "unknown":
                 return FieldVerificationResult(
                     is_valid=False,
-                    field_role=detected_role,
+                    field_role="unknown",
                     confidence=final_confidence,
                     evidence=evidence,
-                    rejection_reason=f"Confidence {final_confidence:.2f} is below safety threshold."
+                    rejection_reason="Generic password field without explicit role semantics (current/new/confirm). REQUIRES_HUMAN."
                 )
 
-            if not role_matches:
+            if detected_role != expected_role:
                 return FieldVerificationResult(
                     is_valid=False,
                     field_role=detected_role,
@@ -165,7 +155,7 @@ class CredentialFieldVerifier:
 
             return FieldVerificationResult(
                 is_valid=True,
-                field_role=detected_role if detected_role != "unknown" else expected_role,
+                field_role=detected_role,
                 confidence=final_confidence,
                 evidence=evidence
             )

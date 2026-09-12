@@ -103,3 +103,6 @@ def run_doctor_diagnostics():
         console.print("\n[bold green]✓ All core systems, AI reasoning guards, and security boundaries operational.[/bold green]\n")
     else:
         console.print("\n[bold yellow]⚠️ System diagnostics completed with warnings / degraded components.[/bold yellow]\n")
+
+if __name__ == "__main__":
+    run_doctor_diagnostics()

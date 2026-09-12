@@ -51,7 +51,7 @@ run_gate "Complete Pytest Suite" "$RUNNER pytest -q"
 
 echo ""
 echo "4. Static Security Scans:"
-run_gate "Static Secret & Master Token Scan" "git grep -E '(\?token=master_token|window\.MASTER_API_TOKEN)' -- app/ui/ || true"
+run_gate "Static Security & Token Isolation Scan" "$RUNNER python scripts/static_security_scan.py"
 
 echo ""
 echo "================================================================================"

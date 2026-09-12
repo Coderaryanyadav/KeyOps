@@ -56,7 +56,11 @@ jobs:
         run: |
           uv run pytest -v
 
-      - name: 7. Run Security Gate Script
+      - name: 7. Run Deterministic Static Security Scanner
+        run: |
+          uv run python scripts/static_security_scan.py
+
+      - name: 8. Run Full Reproducible Security Gate Script
         run: |
           chmod +x ./scripts/security_gate.sh
           ./scripts/security_gate.sh

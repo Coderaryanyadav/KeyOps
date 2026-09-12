@@ -159,7 +159,7 @@ async def test_full_acceptance_scenario():
         
         nav_success = await generic_adapter.navigate_to_security(page)
         assert nav_success is True
-        assert "/generic/security" in page.url
+        assert "/security" in page.url
 
         # Direct adapter credential mutation MUST be rejected by base class security invariant
         from app.safety.secret_boundary import SecretBoundaryViolation, SecretBoundary

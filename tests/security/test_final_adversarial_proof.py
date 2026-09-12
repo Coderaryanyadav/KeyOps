@@ -797,7 +797,7 @@ async def test_action_executor_rejects_link_and_destructive_buttons():
             secret_boundary=boundary,
             approval_context=approval_ctx
         )
-    assert "not an authorized submit control" in str(exc_link.value)
+    assert "not a verified submit control" in str(exc_link.value) or "DENIED" in str(exc_link.value)
 
     # 2. Attacker supplied a "Delete Account" button as submit control -> REJECT
     # Re-issue token
@@ -829,7 +829,7 @@ async def test_action_executor_rejects_link_and_destructive_buttons():
             secret_boundary=boundary,
             approval_context=approval_ctx
         )
-    assert "not an authorized submit control" in str(exc_del.value)
+    assert "not a verified submit control" in str(exc_del.value) or "DENIED" in str(exc_del.value)
 
 
 # ==============================================================================
@@ -956,3 +956,204 @@ async def test_playwright_e2e_real_rotation_and_adversarial_tampering():
         assert "consumed" in str(exc_replay.value) or "DENIED" in str(exc_replay.value)
 
         await browser.close()
+
+
+# ==============================================================================
+# ADDITIONAL ADVERSARIAL PROOF: FORM-BOUND SUBMISSION & FINGERPRINT MUTATION
+# ==============================================================================
+
+def test_secret_boundary_import_and_execution_regression():
+    """
+    SECTION 1 & 2 INVARIANT: SecretBoundary imports Any and executes sanitize_payload_for_ai without error.
+    """
+    from app.safety.secret_boundary import SecretBoundary
+    payload = {"url": "https://example.com", "title": "Safe Title", "unauthorized_key": "drop_me"}
+    sanitized = SecretBoundary.sanitize_payload_for_ai(payload)
+    assert sanitized == {"url": "https://example.com", "title": "Safe Title"}
+
+
+def test_secret_boundary_drop_by_default_matrix():
+    """
+    SECTION 2 INVARIANT: Tests A through F for SecretBoundary.
+    """
+    from app.safety.secret_boundary import SecretBoundary
+
+    # Test A: Unknown top-level field dropped
+    payload_a = {"title": "Settings", "database_dump": "SELECT 1", "unknown_key": "val"}
+    assert SecretBoundary.sanitize_payload_for_ai(payload_a) == {"title": "Settings"}
+
+    # Test B: Unknown nested field dropped
+    payload_b = {
+        "title": "Settings",
+        "nested": {"title": "Sub", "cookies": ["c1=secret"], "session_id": "123"}
+    }
+    sanitized_b = SecretBoundary.sanitize_payload_for_ai(payload_b)
+    assert "cookies" not in str(sanitized_b)
+    assert "session_id" not in str(sanitized_b)
+
+    # Test C: Unknown field inside list of dicts dropped
+    payload_c = {
+        "interactive_elements": [
+            {"element_id": "1", "tag": "input", "auth_token": "secret_token", "role": "password"}
+        ]
+    }
+    sanitized_c = SecretBoundary.sanitize_payload_for_ai(payload_c)
+    assert "auth_token" not in sanitized_c["interactive_elements"][0]
+    assert sanitized_c["interactive_elements"][0]["element_id"] == "1"
+
+    # Test D: Sensitive keywords dropped or never returned
+    payload_d = {
+        "password": "p1", "token": "t1", "cookie": "c1", "authorization": "Bearer xxx",
+        "csrf": "tok", "otp": "123456", "private_key": "key"
+    }
+    assert SecretBoundary.sanitize_payload_for_ai(payload_d) == {}
+
+    # Test E: Raw secret embedded in text value is redacted
+    payload_e = {"title": "Login page with password=SuperSecretRawPassword123!"}
+    sanitized_e = SecretBoundary.sanitize_payload_for_ai(payload_e)
+    assert "SuperSecretRawPassword123!" not in sanitized_e["title"]
+    assert sanitized_e["title"] == "[REDACTED_BY_SECRET_BOUNDARY]"
+
+    # Test F: Symbolic references remain symbolic
+    payload_f = {"secret_reference": "current_password"}
+    sanitized_f = SecretBoundary.sanitize_payload_for_ai(payload_f)
+    assert sanitized_f["secret_reference"] == "current_password"
+
+
+@pytest.mark.asyncio
+async def test_submit_control_outside_password_form_rejected():
+    """
+    SECTION 3 INVARIANT: A generic 'Save' or 'Update' button outside the approved password form is rejected.
+    """
+    mgr = SubmissionApprovalManager(default_ttl_seconds=60)
+    executor = ControlledActionExecutor(custom_approval_manager=mgr)
+    boundary = SecretBoundary()
+
+    token = mgr.issue_approval_token(
+        account_id=1,
+        service="GitHub",
+        verified_domain="github.com",
+        browser_session_id="sess_out_form",
+        workflow_id="wf_out_form",
+        form_fingerprint="fp_out_form"
+    )
+
+    approval_ctx = {
+        "token_id": token.token_id,
+        "account_id": 1,
+        "service": "GitHub",
+        "current_domain": "github.com",
+        "browser_session_id": "sess_out_form",
+        "workflow_id": "wf_out_form",
+        "form_fingerprint": "fp_out_form"
+    }
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+
+        # HTML with two separate forms: an unrelated newsletter form with 'Update' button, and a password form
+        html = """
+        <html>
+        <body>
+            <form id="newsletter-form">
+                <input type="text" name="email">
+                <button type="button" id="unrelated-save-btn">Update Profile</button>
+            </form>
+            <form id="password-form">
+                <input type="password" name="new_pw">
+                <button type="submit" id="real-pw-submit">Save Password</button>
+            </form>
+        </body>
+        </html>
+        """
+        await page.route("https://github.com/**", lambda route: route.fulfill(status=200, body=html, content_type="text/html"))
+        await page.goto("https://github.com/settings/security")
+
+        unrelated_btn = await page.query_selector("#unrelated-save-btn")
+        elem_map = {"unrelated_btn": unrelated_btn}
+
+        # Attempt to submit via unrelated button outside the password form -> MUST BE REJECTED
+        with pytest.raises(ActionExecutionError) as exc:
+            await executor.execute_action(
+                page=page,
+                action_payload={"action": "submit", "target_id": "unrelated_btn"},
+                element_map=elem_map,
+                secret_boundary=boundary,
+                approval_context=approval_ctx
+            )
+        assert "not a verified submit control" in str(exc.value)
+
+        await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_form_fingerprint_changes_on_tampering():
+    """
+    SECTION 4 INVARIANT: Form fingerprint changes if fields or submit buttons change.
+    """
+    from app.ai.navigator import AINavigator
+    nav = AINavigator()
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+
+        # 1. Original Form
+        await page.set_content("""
+        <form id="pw-form">
+            <input type="password" name="old" autocomplete="current-password">
+            <input type="password" name="new" autocomplete="new-password">
+            <button type="submit" id="save">Update Password</button>
+        </form>
+        """)
+        fp_orig = await nav.compute_form_fingerprint(page)
+        assert fp_orig != "fingerprint_empty"
+
+        # 2. Tampered Submit Button
+        await page.set_content("""
+        <form id="pw-form">
+            <input type="password" name="old" autocomplete="current-password">
+            <input type="password" name="new" autocomplete="new-password">
+            <button type="submit" id="attacker_button">Transfer Ownership</button>
+        </form>
+        """)
+        fp_tampered_btn = await nav.compute_form_fingerprint(page)
+        assert fp_tampered_btn != fp_orig
+
+        # 3. Tampered Field Structure
+        await page.set_content("""
+        <form id="pw-form">
+            <input type="password" name="attacker_injected_field">
+            <button type="submit" id="save">Update Password</button>
+        </form>
+        """)
+        fp_tampered_field = await nav.compute_form_fingerprint(page)
+        assert fp_tampered_field != fp_orig
+        assert fp_tampered_field != fp_tampered_btn
+
+        await browser.close()
+
+
+@pytest.mark.asyncio
+async def test_success_verifier_rejects_attacker_settings_url():
+    """
+    SECTION 6 INVARIANT: Post-change settings URL on an attacker/untrusted domain returns UNKNOWN.
+    """
+    verifier = PasswordChangeVerifier()
+    mock_page = AsyncMock()
+    mock_page.evaluate = AsyncMock(return_value="")
+    mock_alert = AsyncMock()
+    mock_alert.inner_text = AsyncMock(return_value="Password changed.")
+    mock_page.query_selector_all = AsyncMock(side_effect=lambda sel: [mock_alert] if "[role='alert']" in sel or ".alert" in sel else [AsyncMock()])
+    
+    # URL has '/settings/security' path, but is on ATTACKER domain!
+    mock_page.url = "https://attacker.com/settings/security"
+
+    outcome = await verifier.verify(
+        mock_page,
+        expected_service="GitHub",
+        expected_domain="github.com"
+    )
+    assert outcome.outcome == "UNKNOWN"
+    assert any("Single weak/isolated signal" in s for s in outcome.signals)

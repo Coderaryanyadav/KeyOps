@@ -66,9 +66,17 @@ class PasswordChangeVerifier:
     SUCCESS_PATTERNS = SUCCESS_KEYWORDS
     FAILURE_PATTERNS = FAILURE_KEYWORDS
 
-    async def verify(self, page: Page, timeout_ms: int = 5000) -> VerificationOutcome:
+    async def verify(
+        self,
+        page: Page,
+        timeout_ms: int = 5000,
+        expected_service: Optional[str] = None,
+        expected_domain: Optional[str] = None
+    ) -> VerificationOutcome:
         """
         Inspects the post-submit DOM state to verify password change outcome via multiple independent signals.
+        Strict multi-signal requirement: Success alert alone or generic text alone returns UNKNOWN.
+        Settings URL must be on a verified trusted domain to count as an independent structural signal.
         """
         signals: List[str] = []
         try:
@@ -127,7 +135,7 @@ class PasswordChangeVerifier:
             password_inputs = await page.query_selector_all("input[type='password']")
             form_disappeared_or_cleared = len(password_inputs) == 0
 
-            # 4. Check for Strong Signal C: URL redirect to post-change settings/account area
+            # 4. Check for Strong Signal C: URL redirect to verified post-change settings/account area
             raw_url = getattr(page, "url", "")
             if callable(raw_url):
                 try:
@@ -139,8 +147,20 @@ class PasswordChangeVerifier:
             else:
                 current_url = ""
 
-            parsed = urlparse(current_url)
-            is_settings_path = any(p in parsed.path.lower() for p in ["settings", "security", "account", "profile", "dashboard"]) if current_url else False
+            is_settings_path = False
+            if current_url and current_url != "about:blank":
+                from app.safety.domain_trust import DomainTrustContext
+                import tldextract
+                ext = tldextract.extract(current_url)
+                reg_d = f"{ext.domain}.{ext.suffix}".lower()
+                
+                svc = expected_service or ext.domain or "generic"
+                allowed = [expected_domain] if expected_domain else ([reg_d] if reg_d else None)
+                trust_ctx = DomainTrustContext(expected_service=svc, allowed_explicit_domains=allowed)
+                trust_eval = trust_ctx.evaluate_url(current_url)
+                if trust_eval.is_trusted:
+                    parsed = urlparse(current_url)
+                    is_settings_path = any(p in parsed.path.lower() for p in ["settings", "security", "account", "profile", "dashboard"])
 
             # Decision Matrix:
             # SUCCESS strictly requires at least 2 independent signals:

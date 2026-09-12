@@ -98,7 +98,7 @@ def run_doctor_diagnostics():
     table.add_row("Privacy Controls", "Zero Telemetry / Local-First", "[green]PASS[/green]")
 
     console.print(table)
-    all_ok = py_ok and pw_ok and db_ok and has_token
+    all_ok = py_ok and pw_ok and chrom_launch_ok and db_ok and has_token
     if all_ok:
         console.print("\n[bold green]✓ All core systems, AI reasoning guards, and security boundaries operational.[/bold green]\n")
     else:

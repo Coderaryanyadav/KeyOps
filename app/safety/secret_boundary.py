@@ -1,4 +1,4 @@
-from typing import Dict, Optional
+from typing import Any, Dict, Optional, List, Set, Union
 from pydantic import BaseModel, Field
 
 class SecretReference(BaseModel):

@@ -135,20 +135,38 @@ class ControlledActionExecutor:
                     destructive_keywords = ["delete", "remove", "cancel", "logout", "sign out", "back", "close", "destroy", "disable"]
                     is_destructive = any(dk in txt_lower for dk in destructive_keywords)
 
+                    # Strictly verify form relationship: must belong to the active password form
+                    is_form_bound = True
+                    if hasattr(candidate, "evaluate"):
+                        try:
+                            is_form_bound = await candidate.evaluate("""el => {
+                                const form = el.closest('form');
+                                if (form) {
+                                    return form.querySelectorAll('input[type="password"]').length > 0;
+                                }
+                                const formId = el.getAttribute('form');
+                                if (formId) {
+                                    const tf = document.getElementById(formId);
+                                    return tf ? tf.querySelectorAll('input[type="password"]').length > 0 : false;
+                                }
+                                return false;
+                            }""")
+                        except Exception:
+                            is_form_bound = True
+
                     is_valid_submit = (
-                        is_vis and is_en and not is_destructive and (
+                        is_vis and is_en and not is_destructive and is_form_bound and (
                             (tag == "button" and inp_type in ("submit", "")) or
                             (tag == "input" and inp_type == "submit") or
-                            (inp_type == "submit") or
-                            any(sk in txt_lower for sk in ["save", "update", "change", "submit", "confirm", "set password", "save password"])
+                            (inp_type == "submit")
                         )
                     )
 
-                    if is_valid_submit and tag not in ("a", "div", "span"):
+                    if is_valid_submit and tag not in ("a", "div", "span", "section", "p"):
                         verified_submit_control = candidate
-                    elif is_destructive or tag in ("a", "div"):
+                    elif is_destructive or tag in ("a", "div", "span") or not is_form_bound:
                         raise ActionExecutionError(
-                            f"Submission DENIED: Target element '{target_id}' (tag: <{tag}>, text: '{txt_lower[:30]}') is not an authorized submit control for password change."
+                            f"Submission DENIED: Target element '{target_id}' (tag: <{tag}>, text: '{txt_lower[:30]}') is not a verified submit control for the approved password form."
                         )
                 except ActionExecutionError:
                     raise
@@ -156,7 +174,7 @@ class ControlledActionExecutor:
                     pass
 
             if not verified_submit_control:
-                # Query page for explicit, standard submit buttons
+                # Query page for explicit, standard submit buttons belonging to the password form
                 submit_buttons = await page.query_selector_all("button[type='submit'], input[type='submit']") if hasattr(page, "query_selector_all") else []
                 if not submit_buttons and hasattr(page, "query_selector"):
                     btn = await page.query_selector("button[type='submit'], input[type='submit']")
@@ -169,7 +187,22 @@ class ControlledActionExecutor:
                         is_en = await btn.is_enabled() if hasattr(btn, "is_enabled") else True
                         txt = (await btn.inner_text() if hasattr(btn, "inner_text") else "") or ""
                         txt_lower = txt.strip().lower()
-                        if is_vis and is_en and not any(dk in txt_lower for dk in ["delete", "remove", "cancel", "logout"]):
+                        is_bound = True
+                        if hasattr(btn, "evaluate"):
+                            try:
+                                is_bound = await btn.evaluate("""el => {
+                                    const form = el.closest('form');
+                                    if (form) return form.querySelectorAll('input[type="password"]').length > 0;
+                                    const formId = el.getAttribute('form');
+                                    if (formId) {
+                                        const tf = document.getElementById(formId);
+                                        return tf ? tf.querySelectorAll('input[type="password"]').length > 0 : false;
+                                    }
+                                    return false;
+                                }""")
+                            except Exception:
+                                is_bound = True
+                        if is_vis and is_en and is_bound and not any(dk in txt_lower for dk in ["delete", "remove", "cancel", "logout"]):
                             verified_submit_control = btn
                             break
                     except Exception:

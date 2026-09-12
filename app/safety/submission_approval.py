@@ -1,5 +1,6 @@
 import secrets
 import time
+import threading
 from typing import Dict, Optional, Tuple, Any
 from pydantic import BaseModel, Field
 from app.core.audit_logger import audit_logger
@@ -35,6 +36,7 @@ class SubmissionApprovalManager:
 
     def __init__(self, default_ttl_seconds: int = 120):
         self.default_ttl_seconds = default_ttl_seconds
+        self._lock = threading.Lock()
         # token_id -> ApprovalToken
         self._tokens: Dict[str, ApprovalToken] = {}
         # session_id -> active token_id
@@ -71,14 +73,15 @@ class SubmissionApprovalManager:
             is_used=False
         )
 
-        # Invalidate any prior token for this browser session
-        if browser_session_id in self._session_tokens:
-            prior_token_id = self._session_tokens[browser_session_id]
-            if prior_token_id in self._tokens:
-                self._tokens[prior_token_id].is_used = True
+        with self._lock:
+            # Invalidate any prior token for this browser session
+            if browser_session_id in self._session_tokens:
+                prior_token_id = self._session_tokens[browser_session_id]
+                if prior_token_id in self._tokens:
+                    self._tokens[prior_token_id].is_used = True
 
-        self._tokens[token_id] = token
-        self._session_tokens[browser_session_id] = token_id
+            self._tokens[token_id] = token
+            self._session_tokens[browser_session_id] = token_id
 
         audit_logger.log_event(
             service,
@@ -100,41 +103,43 @@ class SubmissionApprovalManager:
         Validates token invariants and atomically marks it as used.
         Fails closed on any discrepancy or expiration.
         """
-        if not token_id or token_id not in self._tokens:
-            return False, "DENIED: Invalid or missing approval token. AI cannot manufacture approvals."
+        with self._lock:
+            if not token_id or token_id not in self._tokens:
+                return False, "DENIED: Invalid or missing approval token. AI cannot manufacture approvals."
 
-        token = self._tokens[token_id]
+            token = self._tokens[token_id]
 
-        if token.is_used:
-            return False, "DENIED: Approval token has already been consumed (single-use invariant violated)."
+            if token.is_used:
+                return False, "DENIED: Approval token has already been consumed (single-use invariant violated)."
 
-        now = time.time()
-        if now > token.expires_at:
+            now = time.time()
+            if now > token.expires_at:
+                token.is_used = True
+                return False, f"DENIED: Approval token expired {now - token.expires_at:.1f}s ago."
+
+            if token.account_id != account_id:
+                return False, f"DENIED: Token account mismatch (expected #{token.account_id}, got #{account_id})."
+
+            if token.service != service.lower().strip():
+                return False, f"DENIED: Token service mismatch (expected '{token.service}', got '{service}')."
+
+            if token.verified_domain != current_domain.lower().strip():
+                token.is_used = True
+                return False, f"DENIED: Token domain mismatch (expected '{token.verified_domain}', current '{current_domain}')."
+
+            if token.browser_session_id != browser_session_id:
+                return False, "DENIED: Token browser session mismatch."
+
+            if token.workflow_id != workflow_id:
+                return False, "DENIED: Token workflow ID mismatch."
+
+            if token.form_fingerprint != current_form_fingerprint:
+                token.is_used = True
+                return False, "DENIED: Form fingerprint changed after user approval. Re-approval required."
+
+            # Atomically consume
             token.is_used = True
-            return False, f"DENIED: Approval token expired {now - token.expires_at:.1f}s ago."
 
-        if token.account_id != account_id:
-            return False, f"DENIED: Token account mismatch (expected #{token.account_id}, got #{account_id})."
-
-        if token.service != service.lower().strip():
-            return False, f"DENIED: Token service mismatch (expected '{token.service}', got '{service}')."
-
-        if token.verified_domain != current_domain.lower().strip():
-            self.invalidate_token(token_id, f"Domain mismatch '{token.verified_domain}' vs '{current_domain}'")
-            return False, f"DENIED: Token domain mismatch (expected '{token.verified_domain}', current '{current_domain}')."
-
-        if token.browser_session_id != browser_session_id:
-            return False, "DENIED: Token browser session mismatch."
-
-        if token.workflow_id != workflow_id:
-            return False, "DENIED: Token workflow ID mismatch."
-
-        if token.form_fingerprint != current_form_fingerprint:
-            self.invalidate_token(token_id, "Form DOM structure changed after approval was granted")
-            return False, "DENIED: Form fingerprint changed after user approval. Re-approval required."
-
-        # Atomically consume
-        token.is_used = True
         audit_logger.log_event(
             service,
             f"Approval token '{token_id[:12]}...' successfully validated and consumed for account #{account_id}."
@@ -143,20 +148,30 @@ class SubmissionApprovalManager:
 
     def invalidate_token(self, token_id: str, reason: str) -> None:
         """Explicitly cancels a token."""
-        if token_id in self._tokens:
-            self._tokens[token_id].is_used = True
-            audit_logger.log_event(
-                self._tokens[token_id].service,
-                f"Approval token '{token_id[:12]}...' invalidated: {reason}",
-                level="WARNING"
-            )
+        with self._lock:
+            if token_id in self._tokens:
+                self._tokens[token_id].is_used = True
+                service = self._tokens[token_id].service
+                audit_logger.log_event(
+                    service,
+                    f"Approval token '{token_id[:12]}...' invalidated: {reason}",
+                    level="WARNING"
+                )
 
     def invalidate_for_session(self, browser_session_id: str, reason: str) -> None:
         """Invalidates all tokens tied to a browser session (e.g. on navigation or redirect)."""
-        if browser_session_id in self._session_tokens:
-            tid = self._session_tokens[browser_session_id]
-            self.invalidate_token(tid, reason)
-            del self._session_tokens[browser_session_id]
+        with self._lock:
+            if browser_session_id in self._session_tokens:
+                tid = self._session_tokens[browser_session_id]
+                if tid in self._tokens:
+                    self._tokens[tid].is_used = True
+                    service = self._tokens[tid].service
+                    audit_logger.log_event(
+                        service,
+                        f"Approval token '{tid[:12]}...' invalidated for session '{browser_session_id}': {reason}",
+                        level="WARNING"
+                    )
+                del self._session_tokens[browser_session_id]
 
 # Singleton instance
 approval_manager = SubmissionApprovalManager()

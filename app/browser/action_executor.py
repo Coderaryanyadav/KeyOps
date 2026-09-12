@@ -116,7 +116,15 @@ class ControlledActionExecutor:
             return True
 
         elif action == "navigate":
+            from urllib.parse import urlparse
             target_url = action_payload.get("target_url") or target_id
+            if not target_url:
+                raise ActionExecutionError("Navigation rejected: empty target URL.")
+            
+            parsed = urlparse(target_url)
+            if parsed.scheme.lower() not in ("http", "https"):
+                raise ActionExecutionError(f"Navigation rejected: unsafe scheme '{parsed.scheme}'. Only http/https allowed.")
+
             await page.goto(target_url, wait_until="domcontentloaded")
             return True
 

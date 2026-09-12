@@ -18,12 +18,11 @@ class PasswordChangeVerifier:
 
     SUCCESS_PATTERNS = [
         re.compile(r"password\s+(has\s+been\s+)?(changed|updated|reset|saved)\b", re.IGNORECASE),
-        re.compile(r"successfully\s+(updated|changed|saved)\b", re.IGNORECASE),
+        re.compile(r"successfully\s+(updated|changed|saved|reset)\b", re.IGNORECASE),
         re.compile(r"(your\s+)?changes\s+have\s+been\s+saved\b", re.IGNORECASE),
         re.compile(r"security\s+settings\s+updated\b", re.IGNORECASE),
         re.compile(r"new\s+password\s+activated\b", re.IGNORECASE),
-        re.compile(r"\bpassword\s+saved\b", re.IGNORECASE),
-        re.compile(r"\bsuccess\b", re.IGNORECASE)
+        re.compile(r"\bpassword\s+saved\b", re.IGNORECASE)
     ]
 
     FAILURE_PATTERNS = [
@@ -70,36 +69,25 @@ class PasswordChangeVerifier:
                         details=f"Verified success message: '{match.group(0)}'"
                     )
 
-            # 2. Check if password form input fields disappeared (e.g. modal closed or page redirected)
-            pw_fields = await page.query_selector_all("input[type='password']")
-            if not pw_fields:
-                signals.append("Password input fields no longer present in DOM.")
-                return VerificationOutcome(
-                    outcome="SUCCESS",
-                    confidence=0.88,
-                    signals=signals,
-                    details="Password form closed and navigated away."
-                )
-
-            # 3. Check for specific alert elements or toasts
+            # 2. Check for specific alert elements or toasts
             alert_elems = await page.query_selector_all("[role='alert'], .alert, .toast, .notification, .flash-message")
             for alert in alert_elems:
                 txt = (await alert.inner_text() or "").lower()
-                if "success" in txt or "saved" in txt or "updated" in txt:
-                    signals.append(f"Alert element indicated success: '{txt[:60]}'")
-                    return VerificationOutcome(
-                        outcome="SUCCESS",
-                        confidence=0.95,
-                        signals=signals,
-                        details=f"Success alert confirmed: {txt[:60]}"
-                    )
-                elif "error" in txt or "fail" in txt or "invalid" in txt:
+                if any(k in txt for k in ["error", "fail", "invalid", "incorrect", "denied", "too weak"]):
                     signals.append(f"Alert element indicated failure: '{txt[:60]}'")
                     return VerificationOutcome(
                         outcome="FAILED",
                         confidence=0.95,
                         signals=signals,
                         details=f"Error alert confirmed: {txt[:60]}"
+                    )
+                elif any(k in txt for k in ["success", "saved", "updated", "changed"]):
+                    signals.append(f"Alert element indicated success: '{txt[:60]}'")
+                    return VerificationOutcome(
+                        outcome="SUCCESS",
+                        confidence=0.95,
+                        signals=signals,
+                        details=f"Success alert confirmed: {txt[:60]}"
                     )
 
             # If no conclusive signals found, fail safe with UNKNOWN

@@ -335,7 +335,7 @@
             <div class="modal-footer" id="rotation-modal-footer">
                 <button class="btn btn-secondary" onclick="closeRotationModal()">Cancel</button>
                 <button class="btn btn-secondary" id="modal-resume-btn" style="display:none; background: var(--accent-amber); color: #000;" onclick="resumeHumanChallenge()">Resume Rotation</button>
-                <button class="btn btn-primary-danger" id="modal-approve-btn" style="display:none;" onclick="approveAndExecuteRotation()">AUTHORIZE & SUBMIT PASSWORD CHANGE</button>
+                <button class="btn btn-primary-danger" id="modal-approve-btn" style="display:none;" onclick="approveAndExecuteRotation()">Approve Final Password Change</button>
             </div>
         </div>
     </div>
@@ -360,6 +360,9 @@
         </div>
     </div>
 
+    <script>
+        window.KEYOPS_API_TOKEN = "{{ api_token }}";
+    </script>
     <script src="/static/js/app.js"></script>
 </body>
 </html>

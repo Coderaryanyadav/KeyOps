@@ -32,13 +32,26 @@ class AINavigator:
         self.confidence_engine = MultiDimensionalConfidenceEngine()
 
     async def compute_form_fingerprint(self, page: Page) -> str:
-        """Computes a deterministic hash of all password fields and form attributes on the page."""
+        """
+        Computes a deterministic cryptographic hash of the structural form DOM.
+        Includes form identity, input roles/types/names/IDs/attributes, and submit controls.
+        NEVER includes input values, secrets, cookies, or tokens.
+        """
         try:
-            inputs_info = await page.evaluate("""() => {
-                const inputs = Array.from(document.querySelectorAll("input[type='password'], input[autocomplete*='password'], input[name*='pass']"));
-                return inputs.map(i => `${i.tagName}|${i.type}|${i.name}|${i.id}|${i.getAttribute('autocomplete') || ''}`).join(';;');
+            form_structure = await page.evaluate("""() => {
+                const forms = Array.from(document.querySelectorAll("form"));
+                const inputs = Array.from(document.querySelectorAll("input[type='password'], input[autocomplete*='password'], input[name*='pass'], input[id*='pass']"));
+                const buttons = Array.from(document.querySelectorAll("button[type='submit'], input[type='submit'], button:not([type])"));
+
+                const formsData = forms.map(f => `FORM:${f.id}|${f.name}|${f.getAttribute('action') || ''}|${f.getAttribute('method') || ''}`);
+                const inputsData = inputs.map(i => `INPUT:${i.tagName}|${i.type}|${i.name}|${i.id}|${i.getAttribute('autocomplete') || ''}|${i.getAttribute('placeholder') || ''}|${i.getAttribute('aria-label') || ''}|${i.disabled}|${i.readOnly}`);
+                const buttonsData = buttons.map(b => `BTN:${b.tagName}|${b.type}|${b.id}|${b.name}|${(b.innerText || '').trim().slice(0, 30)}`);
+
+                return [...formsData, ...inputsData, ...buttonsData].join(';;');
             }""")
-            return hashlib.sha256(inputs_info.encode('utf-8')).hexdigest()[:16]
+            if not form_structure or form_structure == "":
+                return "fingerprint_empty"
+            return hashlib.sha256(form_structure.encode('utf-8')).hexdigest()[:24]
         except Exception:
             return "fingerprint_unknown"
 

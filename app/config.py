@@ -1,4 +1,5 @@
 import os
+import secrets
 from pathlib import Path
 from typing import Optional
 from dotenv import load_dotenv
@@ -41,6 +42,7 @@ class AppSettings(BaseModel):
     telemetry_enabled: bool = False
     port: int = 8443
     host: str = "127.0.0.1"
+    local_api_token: str = Field(default_factory=lambda: os.environ.get("KEYOPS_API_TOKEN", "") or secrets.token_urlsafe(32))
 
     # AI Reasoning Configuration
     ai_provider: str = "gemini"  # gemini, local, disabled

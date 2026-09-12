@@ -3,6 +3,14 @@ let pendingRotationData = null;
 let activeWorkflowState = null;
 let ws = null;
 
+function getAuthHeaders(extraHeaders = {}) {
+    const headers = { ...extraHeaders };
+    if (window.KEYOPS_API_TOKEN) {
+        headers["X-KeyOps-Auth-Token"] = window.KEYOPS_API_TOKEN;
+    }
+    return headers;
+}
+
 document.addEventListener("DOMContentLoaded", () => {
     setupNavigation();
     loadDashboardData();
@@ -33,7 +41,8 @@ function setupNavigation() {
 
 function connectWebSocket() {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+    const tokenParam = window.KEYOPS_API_TOKEN ? `?token=${encodeURIComponent(window.KEYOPS_API_TOKEN)}` : "";
+    ws = new WebSocket(`${protocol}//${window.location.host}/ws${tokenParam}`);
 
     ws.onmessage = (event) => {
         const data = JSON.parse(event.data);
@@ -67,7 +76,7 @@ function logLiveActivity(msg) {
 
 async function loadDashboardData() {
     try {
-        const resOverview = await fetch("/api/dashboard/overview");
+        const resOverview = await fetch("/api/dashboard/overview", { headers: getAuthHeaders() });
         const overview = await resOverview.json();
 
         document.getElementById("score-display").innerText = `${overview.score} / 100`;
@@ -82,7 +91,7 @@ async function loadDashboardData() {
         document.getElementById("stat-mfa").innerText = `${overview.mfa_coverage_percent}%`;
         document.getElementById("stat-reused").innerText = overview.reused_count;
 
-        const resAccounts = await fetch("/api/accounts");
+        const resAccounts = await fetch("/api/accounts", { headers: getAuthHeaders() });
         currentAccounts = await resAccounts.json();
         renderAccountsTable(currentAccounts);
     } catch (err) {
@@ -133,7 +142,10 @@ async function startBatchCompromisedFix() {
 
 async function initQueue(filterMode = "all") {
     try {
-        const res = await fetch(`/api/queue/init?filter_mode=${filterMode}`, { method: "POST" });
+        const res = await fetch(`/api/queue/init?filter_mode=${filterMode}`, { 
+            method: "POST",
+            headers: getAuthHeaders()
+        });
         const data = await res.json();
         renderQueueTable(data.queue);
     } catch (err) {
@@ -143,7 +155,7 @@ async function initQueue(filterMode = "all") {
 
 async function loadQueueData() {
     try {
-        const res = await fetch("/api/queue");
+        const res = await fetch("/api/queue", { headers: getAuthHeaders() });
         const items = await res.json();
         renderQueueTable(items);
     } catch (err) {
@@ -182,7 +194,7 @@ async function initiateRotation(accountId) {
     try {
         const res = await fetch("/api/rotation/prepare", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: getAuthHeaders({ "Content-Type": "application/json" }),
             body: JSON.stringify({ account_id: accountId })
         });
         pendingRotationData = await res.json();
@@ -274,23 +286,27 @@ async function approveAndExecuteRotation() {
     showLoadingModal("Authorizing & Submitting", "Issuing one-time approval token and submitting password update...");
 
     try {
-        // Step 1: Request one-time cryptographic approval token
+        // Step 1: Request one-time cryptographic approval token (server derives & verifies context)
         const approveRes = await fetch("/api/rotation/approve", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: getAuthHeaders({ "Content-Type": "application/json" }),
             body: JSON.stringify({
                 account_id: pendingRotationData.account_id,
-                workflow_id: pendingRotationData.workflow_id,
-                session_id: pendingRotationData.session_id,
-                form_fingerprint: pendingRotationData.form_fingerprint
+                workflow_id: pendingRotationData.workflow_id
             })
         });
         const approval = await approveRes.json();
 
+        if (approval.status !== "APPROVED" && !approval.approval_token_id) {
+            alert(`Approval rejected: ${approval.detail || approval.message || 'Validation failed'}`);
+            closeRotationModal();
+            return;
+        }
+
         // Step 2: Execute submission with token
         const execRes = await fetch("/api/rotation/execute", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: getAuthHeaders({ "Content-Type": "application/json" }),
             body: JSON.stringify({
                 workflow_id: pendingRotationData.workflow_id,
                 approval_token_id: approval.approval_token_id,
@@ -308,7 +324,7 @@ async function approveAndExecuteRotation() {
             loadDashboardData();
             loadQueueData();
         } else {
-            alert(`Submission outcome: ${result.status} - ${result.details || result.error}`);
+            alert(`Submission outcome: ${result.status} - ${result.details || result.error || result.message}`);
             closeRotationModal();
             loadDashboardData();
         }
@@ -326,7 +342,7 @@ async function resumeHumanChallenge() {
     try {
         const res = await fetch("/api/rotation/resume", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: getAuthHeaders({ "Content-Type": "application/json" }),
             body: JSON.stringify({
                 workflow_id: pendingRotationData.workflow_id,
                 session_id: pendingRotationData.session_id
@@ -375,6 +391,7 @@ async function submitCSVImport() {
     try {
         const res = await fetch("/api/accounts/import", {
             method: "POST",
+            headers: getAuthHeaders(),
             body: formData
         });
         const data = await res.json();
@@ -388,7 +405,7 @@ async function submitCSVImport() {
 
 async function loadWorkflowMemory() {
     try {
-        const res = await fetch("/api/workflows");
+        const res = await fetch("/api/workflows", { headers: getAuthHeaders() });
         const data = await res.json();
         document.getElementById("workflow-memory-view").innerText = JSON.stringify(data, null, 2);
     } catch (err) {
@@ -399,16 +416,17 @@ async function loadWorkflowMemory() {
 async function loadDoctorData() {
     const docContainer = document.getElementById("doctor-content");
     try {
-        const res = await fetch("/api/doctor");
+        const res = await fetch("/api/doctor", { headers: getAuthHeaders() });
         const doc = await res.json();
         docContainer.innerHTML = `
             <div class="summary-card">
                 <div class="summary-field"><span class="key">Overall Status:</span><span class="val" style="color: var(--accent-emerald)">${doc.status}</span></div>
                 <div class="summary-field"><span class="key">Python Version:</span><span class="val">${doc.python_version}</span></div>
-                <div class="summary-field"><span class="key">Playwright Engine:</span><span class="val">Ready</span></div>
-                <div class="summary-field"><span class="key">SQLite Database:</span><span class="val">${doc.sqlite_path}</span></div>
-                <div class="summary-field"><span class="key">macOS Keychain Access:</span><span class="val">Verified</span></div>
+                <div class="summary-field"><span class="key">Playwright Engine:</span><span class="val">${doc.playwright_installed ? 'Installed & Accessible' : 'Not installed'}</span></div>
+                <div class="summary-field"><span class="key">SQLite Database:</span><span class="val">${doc.sqlite_path} (${doc.database_connected ? 'Connected' : 'Disconnected'})</span></div>
+                <div class="summary-field"><span class="key">macOS Keychain Access:</span><span class="val">${doc.keychain_accessible ? 'Verified' : 'Unavailable'}</span></div>
                 <div class="summary-field"><span class="key">Registered Service Adapters:</span><span class="val">${doc.adapters_count} Active</span></div>
+                <div class="summary-field"><span class="key">Local API Auth:</span><span class="val" style="color: var(--accent-emerald)">${doc.local_api_auth_active ? 'Active (Secured)' : 'Disabled'}</span></div>
                 <div class="summary-field"><span class="key">Submission Approval Engine:</span><span class="val" style="color: var(--accent-emerald)">Active (Enforced)</span></div>
                 <div class="summary-field"><span class="key">Credential Field Verifier:</span><span class="val" style="color: var(--accent-emerald)">Active (Deterministic DOM)</span></div>
                 <div class="summary-field"><span class="key">Domain Trust Engine:</span><span class="val" style="color: var(--accent-emerald)">Active (Strict eTLD+1)</span></div>
@@ -422,7 +440,7 @@ async function loadDoctorData() {
 
 async function loadAuditLogs() {
     try {
-        const res = await fetch("/api/audit");
+        const res = await fetch("/api/audit", { headers: getAuthHeaders() });
         const data = await res.json();
         document.getElementById("audit-log-view").innerText = data.logs.join("\n");
     } catch (err) {

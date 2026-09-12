@@ -158,7 +158,7 @@ class PasswordRotationOrchestrator:
                     "service": service,
                     "domain": domain,
                     "form_fingerprint": form_fp,
-                    "generated_password": new_password,
+                    "password_status": "Strong password prepared locally",
                     "password_policy": policy.model_dump(),
                     "requires_approval": True
                 }
@@ -223,7 +223,7 @@ class PasswordRotationOrchestrator:
         on_progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None
     ) -> Dict[str, Any]:
         """
-        Phase 2: Verifies single-use approval token, transitions state to APPROVED -> SUBMITTING,
+        Phase 2: Verifies single-use approval token BEFORE transitioning state to APPROVED -> SUBMITTING,
         executes submit, and verifies outcome using PasswordChangeVerifier.
         """
         state = self._active_workflows.get(workflow_id)
@@ -234,8 +234,12 @@ class PasswordRotationOrchestrator:
         secret_boundary = self._secret_boundaries.get(workflow_id)
         sm = WorkflowStateMachine(state)
 
-        # Transition to APPROVED
-        sm.transition_to(WorkflowPhase.APPROVED, "User explicitly confirmed password change.")
+        # State invariant check: workflow must be in READY_FOR_APPROVAL
+        if state.phase != WorkflowPhase.READY_FOR_APPROVAL:
+            return {
+                "status": "FAILED",
+                "message": f"Illegal submission attempt: workflow is in state '{state.phase.value}', expected 'READY_FOR_APPROVAL'."
+            }
 
         # Re-verify live form fingerprint before submission
         current_fp = await self.navigator.compute_form_fingerprint(page) if page else ""
@@ -250,17 +254,9 @@ class PasswordRotationOrchestrator:
             "form_fingerprint": current_fp
         }
 
-        sm.transition_to(WorkflowPhase.SUBMITTING, "Submitting password update to server.")
-        if on_progress_callback:
-            await on_progress_callback({
-                "workflow_id": workflow_id,
-                "account_id": state.account_id,
-                "phase": WorkflowPhase.SUBMITTING.value,
-                "message": "Submitting password update..."
-            })
-
         try:
             # Execute submit action through ControlledActionExecutor
+            # The executor validates and atomically consumes the single-use token FIRST
             await self.executor.execute_action(
                 page=page,
                 action_payload={"action": "submit", "confidence": 1.0},
@@ -268,6 +264,18 @@ class PasswordRotationOrchestrator:
                 secret_boundary=secret_boundary,
                 approval_context=approval_ctx
             )
+
+            # ONLY NOW transition to APPROVED and SUBMITTING
+            sm.transition_to(WorkflowPhase.APPROVED, "User approval token successfully validated and consumed.")
+            sm.transition_to(WorkflowPhase.SUBMITTING, "Submitting password update to server.")
+
+            if on_progress_callback:
+                await on_progress_callback({
+                    "workflow_id": workflow_id,
+                    "account_id": state.account_id,
+                    "phase": WorkflowPhase.SUBMITTING.value,
+                    "message": "Submitting password update..."
+                })
 
             # Transition to VERIFYING_SUCCESS
             sm.transition_to(WorkflowPhase.VERIFYING_SUCCESS, "Inspecting post-submission outcome.")
@@ -351,6 +359,9 @@ class PasswordRotationOrchestrator:
             return {"status": "FAILED", "message": "Browser page or secret context lost."}
 
         sm = WorkflowStateMachine(state)
+        # Invalidate any prior approval tokens for this session
+        approval_manager.invalidate_for_session(session_id, "Workflow resumed after human intervention.")
+
         trust_ctx = DomainTrustContext(expected_service=state.service, allowed_explicit_domains=[state.expected_domain])
 
         # Transition back to VERIFYING_DOMAIN & NAVIGATING
@@ -388,6 +399,34 @@ class PasswordRotationOrchestrator:
             }
         
         return nav_result
+
+    async def cleanup_workflow(self, workflow_id: str) -> None:
+        """Safely cleans up memory, secret vaults, browser contexts, and approval tokens."""
+        if workflow_id in self._secret_boundaries:
+            self._secret_boundaries[workflow_id].clear()
+            del self._secret_boundaries[workflow_id]
+
+        if workflow_id in self._active_pages:
+            try:
+                page = self._active_pages[workflow_id]
+                if not page.is_closed():
+                    await page.close()
+            except Exception:
+                pass
+            del self._active_pages[workflow_id]
+
+        if workflow_id in self._active_contexts:
+            try:
+                ctx = self._active_contexts[workflow_id]
+                await ctx.close()
+            except Exception:
+                pass
+            del self._active_contexts[workflow_id]
+
+        if workflow_id in self._active_workflows:
+            state = self._active_workflows[workflow_id]
+            approval_manager.invalidate_token(f"wf_{workflow_id}", "Workflow cleaned up.")
+            del self._active_workflows[workflow_id]
 
 # Singleton instance
 orchestrator = PasswordRotationOrchestrator()
